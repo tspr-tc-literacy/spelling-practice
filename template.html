@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spelling practice — writing template</title>
+<style>
+@page { size: A4 portrait; margin: 0; }
+html, body { margin: 0; padding: 0; background: #fff; }
+.toolbar {
+  font-family: Arial, sans-serif; text-align: center; padding: 10px;
+}
+.toolbar button {
+  font-size: 17px; padding: 12px 28px; border-radius: 10px;
+  border: 1px solid #2d5f8a; background: #2d5f8a; color: #fff;
+  cursor: pointer;
+}
+.sheet {
+  position: relative; width: 210mm; height: 296mm; margin: 0 auto;
+  font-family: Arial, sans-serif; box-sizing: border-box;
+  background: #fff;
+}
+.fid { position: absolute; width: 10mm; height: 10mm; background: #000; }
+.fid.tl { top: 6mm; left: 6mm; }
+.fid.tr { top: 6mm; right: 6mm; }
+.fid.bl { bottom: 6mm; left: 6mm; }
+.fid.br {
+  bottom: 6mm; right: 6mm; background: none;
+  border: 2.6mm solid #000; box-sizing: border-box;
+}
+.head {
+  position: absolute; top: 17.5mm; left: 12mm; right: 12mm;
+}
+.head h1 { font-size: 13pt; margin: 0; display: inline-block; }
+.meta { float: right; }
+.meta label {
+  font-size: 7.5pt; color: #666; display: inline-block;
+  margin-left: 5mm; vertical-align: top;
+}
+.meta .box {
+  display: block; border: 0.35mm solid #888; height: 7mm;
+  margin-top: 1mm; border-radius: 1mm;
+}
+.meta .date { width: 26mm; }
+.meta .page { width: 12mm; }
+.row { position: absolute; left: 12mm; right: 12mm; height: 17mm; }
+.num {
+  position: absolute; left: 0; top: 0; width: 12mm; height: 17mm;
+  border: 0.45mm solid #000; border-radius: 1.2mm;
+  font-size: 15pt; font-weight: bold; text-align: center;
+  line-height: 17mm; box-sizing: border-box;
+}
+.write {
+  position: absolute; left: 16mm; right: 0; top: 0; height: 17mm;
+  border: 0.45mm solid #000; border-radius: 1.2mm;
+  box-sizing: border-box;
+}
+.write::after {
+  content: ''; position: absolute; left: 3mm; right: 3mm;
+  bottom: 4.5mm; border-bottom: 0.4mm dotted #b9b9b9;
+}
+.foot {
+  position: absolute; top: 253mm; left: 0; right: 0;
+  text-align: center; font-size: 8.5pt; color: #888;
+}
+@media print { .toolbar { display: none; } }
+</style>
+</head>
+<body>
+<div class="toolbar"><button onclick="window.print()">Print</button></div>
+<div class="sheet">
+  <div class="fid tl"></div><div class="fid tr"></div>
+  <div class="fid bl"></div><div class="fid br"></div>
+  <div class="head">
+    <h1>TC: Spelling App</h1>
+    <span class="meta">
+      <label>Date<span class="box date"></span></label>
+      <label>Page<span class="box page"></span></label>
+    </span>
+  </div>
+  <div class="foot">Dark pen &middot; big letters &middot; one word per box</div>
+</div>
+<script>
+(function () {
+  var sheet = document.querySelector('.sheet');
+  var foot = sheet.querySelector('.foot');
+  for (var i = 0; i < 10; i++) {
+    var row = document.createElement('div');
+    row.className = 'row';
+    row.style.top = (30 + i * 22.3) + 'mm';
+    row.innerHTML = '<span class="num">' + (i + 1) +
+      '</span><span class="write"></span>';
+    sheet.insertBefore(row, foot);
+  }
+  if (location.search.indexOf('print') !== -1) {
+    setTimeout(function () { window.print(); }, 300);
+  }
+})();
+</script>
+</body>
+</html>

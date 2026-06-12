@@ -1,0 +1,1721 @@
+<!DOCTYPE html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Spelling Practice</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Spelling">
+<link rel="manifest" href="manifest.webmanifest">
+<style>
+* { box-sizing: border-box; margin: 0; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: #f7f6f2; color: #222; min-height: 100vh;
+}
+header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; background: #2d5f8a; color: #fff;
+  position: relative;
+}
+.brand { font-size: 18px; font-weight: 600; }
+#btn-menu {
+  background: none; border: none; color: #fff; font-size: 24px;
+  padding: 4px 12px; cursor: pointer;
+}
+#menu {
+  position: absolute; right: 8px; top: 48px; background: #fff;
+  border: 1px solid #ccc; border-radius: 8px; z-index: 10;
+  box-shadow: 0 2px 8px rgba(0,0,0,.15); display: flex;
+  flex-direction: column; min-width: 220px;
+}
+#menu button {
+  background: none; border: none; padding: 14px 16px; text-align: left;
+  font-size: 16px; cursor: pointer; border-bottom: 1px solid #eee;
+}
+#menu button:last-child { border-bottom: none; }
+main { max-width: 480px; margin: 0 auto; padding: 20px 16px 40px; }
+.screen { display: none; }
+.screen.active { display: block; }
+h1 { font-size: 24px; margin: 12px 0 16px; }
+p { line-height: 1.5; margin-bottom: 12px; }
+.hint { color: #555; font-size: 15px; }
+.count { color: #555; font-size: 14px; margin-bottom: 8px; }
+button {
+  font-family: inherit; font-size: 17px; border-radius: 10px;
+  border: 1px solid #bbb; background: #fff; padding: 12px 18px;
+  cursor: pointer;
+}
+.primary {
+  background: #2d5f8a; border-color: #2d5f8a; color: #fff;
+  font-weight: 600;
+}
+.big { width: 100%; padding: 16px; font-size: 19px; margin-top: 16px; }
+.speak {
+  display: block; margin: 8px auto 16px; background: #eef3f7;
+  border-color: #c5d4e0;
+}
+.reveal {
+  font-size: 42px; font-weight: 700; text-align: center;
+  letter-spacing: 1px; padding: 28px 8px; background: #fff;
+  border: 2px solid #2d5f8a; border-radius: 12px; margin: 16px 0;
+  word-break: break-word;
+}
+.grades { text-align: center; margin-top: 16px; }
+.grades button {
+  font-size: 18px; font-weight: 600; padding: 16px 0; width: 31%;
+  margin: 0 1%;
+}
+.g-again { background: #fdecea; border-color: #e8a39c; color: #a32d2d; }
+.g-good { background: #eaf6ec; border-color: #9ccfa6; color: #2e6b3a; }
+.g-easy { background: #eef3f7; border-color: #a8c3d8; color: #1d4f78; }
+.stats { display: flex; gap: 10px; margin: 16px 0; }
+.stats div {
+  flex: 1; background: #fff; border: 1px solid #ddd; border-radius: 10px;
+  text-align: center; padding: 14px 4px;
+}
+.stats span { font-size: 30px; font-weight: 700; display: block; }
+.stats label { font-size: 13px; color: #666; }
+.banner {
+  background: #fff8e1; border: 1px solid #e0c36a; border-radius: 10px;
+  padding: 14px 16px; margin: 14px auto; max-width: 480px;
+}
+.banner .primary { margin-top: 8px; }
+.boxno { text-align: center; font-size: 30px; margin: 8px 0; }
+.photo-btn {
+  display: block; text-align: center; margin-top: 16px;
+  border-radius: 10px; padding: 16px; font-size: 19px;
+  cursor: pointer;
+}
+textarea {
+  width: 100%; font-family: inherit; font-size: 15px; padding: 10px;
+  border: 1px solid #bbb; border-radius: 8px; margin-bottom: 10px;
+}
+.hidden { display: none !important; }
+#toast {
+  position: sticky; top: 0; z-index: 20; margin: 0 auto;
+  max-width: 480px; padding: 12px 16px; border-radius: 0 0 10px 10px;
+  background: #2e6b3a; color: #fff; font-size: 15px; text-align: center;
+}
+#toast.error { background: #a32d2d; }
+#print-area { display: none; }
+
+@media print {
+  body * { visibility: hidden; }
+  #print-area, #print-area * { visibility: visible; }
+  #print-area { display: block; position: absolute; left: 0; top: 0; }
+  .tpl-page {
+    page-break-after: always; position: relative; width: 100%;
+    height: 96vh; padding: 14mm 12mm;
+  }
+  .tpl-corner {
+    position: absolute; width: 8mm; height: 8mm; background: #000;
+  }
+  .tpl-corner.tl { top: 4mm; left: 4mm; }
+  .tpl-corner.tr { top: 4mm; right: 4mm; }
+  .tpl-corner.bl { bottom: 4mm; left: 4mm; }
+  .tpl-corner.br { bottom: 4mm; right: 4mm; }
+  .tpl-head { font-size: 12pt; margin-bottom: 8mm; }
+  .tpl-row {
+    display: flex; align-items: flex-end; height: 18mm;
+    border-bottom: 1pt solid #333; margin-bottom: 4mm;
+  }
+  .tpl-num { font-size: 12pt; width: 10mm; }
+  .tpl-line { flex: 1; }
+  .tpl-mark {
+    width: 14mm; border-left: 1pt solid #999; height: 12mm;
+  }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="brand">Spelling Practice</span>
+  <button id="btn-menu" aria-label="Menu">&#8942;</button>
+  <nav id="menu" class="hidden">
+    <button id="menu-report">Send report to teacher</button>
+    <button id="menu-backup">Download backup file</button>
+    <button id="menu-print">Print writing templates</button>
+    <button id="menu-code">Enter a code</button>
+  </nav>
+</header>
+
+<div id="toast" class="hidden" role="status"></div>
+
+<div id="req-banner" class="banner hidden">
+  <p><strong>Your teacher has asked for the spelling report.</strong></p>
+  <button class="btn-send-report primary">Send report</button>
+</div>
+
+<main>
+
+<section id="scr-welcome" class="screen active">
+  <h1>Welcome</h1>
+  <p>This app practises spelling words chosen by your teacher.
+     Open the link from your teacher's email to load your words —
+     or paste the code from that email below.</p>
+  <textarea id="code-input" rows="3"
+    placeholder="Paste your code here"></textarea>
+  <button id="btn-import-welcome" class="primary">Load my words</button>
+</section>
+
+<section id="scr-home" class="screen">
+  <h1>Today</h1>
+  <div class="stats">
+    <div><span id="home-due">0</span><label>to review</label></div>
+    <div><span id="home-new">0</span><label>new</label></div>
+    <div><span id="home-total">0</span><label>in deck</label></div>
+  </div>
+  <p class="hint">You'll need a printed template page and a pen.</p>
+  <button id="btn-start" class="primary big">Start practice</button>
+  <div id="code-entry" class="hidden">
+    <textarea id="code-input2" rows="3"
+      placeholder="Paste your code here"></textarea>
+    <button id="btn-import">Load</button>
+  </div>
+</section>
+
+<section id="scr-dictate" class="screen">
+  <p id="dict-count" class="count"></p>
+  <h1 id="dict-box" class="boxno"></h1>
+  <button id="btn-speak" class="speak" aria-label="Say the word again">
+    &#128266; Hear it again</button>
+  <p class="hint">Listen, then write the word in that box on your page.
+     No answers yet — they come after the photo.</p>
+  <button id="btn-dict-next" class="primary big">Written it — next word</button>
+</section>
+
+<section id="scr-photo" class="screen">
+  <h1>Photograph your page</h1>
+  <p class="hint">Before any answers are shown, take one photo of the
+     whole page. Line up all four black corner squares in the shot.</p>
+  <label class="primary big photo-btn">
+    &#128247; Take the photo
+    <input id="photo-input" type="file" accept="image/*"
+      capture="environment" class="hidden">
+  </label>
+  <p id="photo-status" class="hint"></p>
+  <button id="btn-photo-continue" class="big">Check my words</button>
+</section>
+
+<section id="scr-check" class="screen">
+  <p id="check-count" class="count"></p>
+  <h1 id="check-box" class="boxno"></h1>
+  <div id="word-reveal" class="reveal"></div>
+  <button id="btn-check-speak" class="speak" aria-label="Say the word">
+    &#128266; Hear it</button>
+  <div class="grades">
+    <p class="hint">Look at that box on your page — did you spell it right?</p>
+    <button id="btn-again" class="g-again">&#10007; Wrong</button>
+    <button id="btn-good" class="g-good">&#10003; Correct</button>
+    <button id="btn-easy" class="g-easy">Easy</button>
+  </div>
+</section>
+
+<section id="scr-fixup" class="screen">
+  <p id="fix-count" class="count"></p>
+  <p class="hint">Write this word correctly on your page:</p>
+  <div id="fix-word" class="reveal"></div>
+  <button id="btn-fix-speak" class="speak" aria-label="Say it again">
+    &#128266; Hear it again</button>
+  <button id="btn-fix-done" class="primary big">Done — next</button>
+</section>
+
+<section id="scr-summary" class="screen">
+  <h1>Finished!</h1>
+  <div class="stats">
+    <div><span id="sum-done">0</span><label>words</label></div>
+    <div><span id="sum-right">0</span><label>correct</label></div>
+    <div><span id="sum-wrong">0</span><label>to work on</label></div>
+  </div>
+  <div id="req-banner-end" class="banner hidden">
+    <p><strong>Your teacher has asked for the spelling report.</strong></p>
+    <button class="btn-send-report primary">Send report</button>
+  </div>
+  <button id="btn-sum-home" class="primary big">Home</button>
+</section>
+
+</main>
+
+<div id="print-area"></div>
+
+<script>
+// Spelling Practice App - master word list + config.
+// MASTER is index-stable: codes reference words by position.
+// NEVER reorder or delete entries. extract_words.py appends only.
+const CONFIG = {
+  APP_NAME: 'Spelling Practice',
+  VERSION: '1.1.0',
+  TEACHER_NAME: 'Mr Sproule',
+  TEACHER_EMAIL: 'tspr@tc.vic.edu.au',
+  NEW_PER_DAY: 5,
+  MAX_DUE_PER_SESSION: 20,
+  PAGE_SIZE: 10,
+  STEPS: [1, 2, 4, 7, 14, 30, 60, 120]
+};
+const MASTER = [
+  ['freshest', 1],
+  ['freshness', 1],
+  ['quietest', 1],
+  ['quietness', 1],
+  ['reborn', 1],
+  ['refresh', 1],
+  ['repack', 1],
+  ['repacking', 1],
+  ['spending', 1],
+  ['wondering', 1],
+  ['brushing', 2],
+  ['crashing', 2],
+  ['lightest', 2],
+  ['respell', 3],
+  ['thickest', 3],
+  ['thickness', 3],
+  ['unborn', 3],
+  ['unhappy', 3],
+  ['unpack', 3],
+  ['matched', 4],
+  ['matching', 4],
+  ['rematch', 4],
+  ['report', 4],
+  ['resort', 4],
+  ['sorted', 4],
+  ['sorting', 4],
+  ['authoring', 6],
+  ['backless', 6],
+  ['helper', 6],
+  ['helpful', 6],
+  ['helping', 6],
+  ['helpless', 6],
+  ['motoring', 6],
+  ['filling', 7],
+  ['friendly', 7],
+  ['grandest', 7],
+  ['grandness', 7],
+  ['mismatch', 7],
+  ['misspell', 7],
+  ['misspend', 7],
+  ['mistake', 7],
+  ['refill', 7],
+  ['resell', 7],
+  ['selling', 7],
+  ['dullest', 8],
+  ['dullness', 8],
+  ['stretching', 8],
+  ['catching', 9],
+  ['formed', 9],
+  ['forming', 9],
+  ['formless', 9],
+  ['helplessness', 9],
+  ['humanness', 9],
+  ['pressed', 9],
+  ['presser', 9],
+  ['pressing', 9],
+  ['reform', 9],
+  ['repress', 9],
+  ['refillable', 10],
+  ['finest', 14],
+  ['likable', 14],
+  ['liking', 14],
+  ['nameless', 14],
+  ['naming', 14],
+  ['notable', 14],
+  ['noting', 14],
+  ['rename', 14],
+  ['authored', 15],
+  ['grading', 15],
+  ['hopeless', 15],
+  ['hoping', 15],
+  ['misuse', 15],
+  ['motored', 15],
+  ['noted', 15],
+  ['reuse', 15],
+  ['unpacked', 15],
+  ['usable', 15],
+  ['useless', 15],
+  ['using', 15],
+  ['wider', 15],
+  ['widest', 15],
+  ['barest', 16],
+  ['careless', 16],
+  ['caring', 16],
+  ['dining', 16],
+  ['prepack', 16],
+  ['preserve', 16],
+  ['presort', 16],
+  ['restless', 16],
+  ['restlessness', 16],
+  ['serving', 16],
+  ['unrest', 16],
+  ['cents', 17],
+  ['faceless', 17],
+  ['facing', 17],
+  ['rented', 17],
+  ['renting', 17],
+  ['retrace', 17],
+  ['traced', 17],
+  ['tracing', 17],
+  ['backer', 18],
+  ['catcher', 18],
+  ['diner', 18],
+  ['renter', 18],
+  ['righter', 18],
+  ['maddest', 19],
+  ['nightly', 19],
+  ['saddest', 19],
+  ['sadness', 19],
+  ['shopping', 19],
+  ['snapping', 19],
+  ['swimming', 19],
+  ['unsnap', 19],
+  ['armed', 20],
+  ['arming', 20],
+  ['armless', 20],
+  ['barred', 20],
+  ['barring', 20],
+  ['carted', 20],
+  ['carting', 20],
+  ['farmer', 20],
+  ['hating', 20],
+  ['unequal', 20],
+  ['choiceless', 24],
+  ['coiling', 24],
+  ['define', 24],
+  ['deform', 24],
+  ['degrade', 24],
+  ['deport', 24],
+  ['depress', 24],
+  ['forcing', 24],
+  ['planning', 24],
+  ['racing', 24],
+  ['uncoil', 24],
+  ['voicing', 24],
+  ['blissful', 25],
+  ['cageless', 25],
+  ['caging', 25],
+  ['careful', 25],
+  ['changing', 25],
+  ['forceful', 25],
+  ['graceful', 25],
+  ['hateful', 25],
+  ['package', 25],
+  ['paging', 25],
+  ['raging', 25],
+  ['rightful', 25],
+  ['running', 25],
+  ['stopping', 25],
+  ['nerveless', 27],
+  ['passed', 27],
+  ['passing', 27],
+  ['prewash', 27],
+  ['unnerve', 27],
+  ['unwanted', 27],
+  ['wandered', 27],
+  ['wandering', 27],
+  ['wanted', 27],
+  ['wanting', 27],
+  ['washable', 27],
+  ['watered', 27],
+  ['watering', 27],
+  ['widen', 27],
+  ['dealer', 28],
+  ['dealing', 28],
+  ['lonely', 28],
+  ['loner', 28],
+  ['readable', 28],
+  ['unreal', 28],
+  ['biggest', 29],
+  ['hottest', 29],
+  ['lengthen', 29],
+  ['loser', 29],
+  ['losing', 29],
+  ['shorten', 29],
+  ['signed', 29],
+  ['signing', 29],
+  ['strengthen', 29],
+  ['dropping', 30],
+  ['formal', 30],
+  ['herbal', 30],
+  ['shining', 30],
+  ['stepped', 30],
+  ['stepping', 30],
+  ['verbal', 30],
+  ['workable', 30],
+  ['worldly', 30],
+  ['boyish', 31],
+  ['clannish', 31],
+  ['civilly', 32],
+  ['joyful', 32],
+  ['playful', 32],
+  ['prepay', 32],
+  ['copied', 36],
+  ['copying', 36],
+  ['cried', 36],
+  ['crying', 36],
+  ['driest', 36],
+  ['happiest', 36],
+  ['happiness', 36],
+  ['heaviest', 36],
+  ['nastiest', 36],
+  ['nastiness', 36],
+  ['pitiful', 36],
+  ['pitying', 36],
+  ['studied', 36],
+  ['studying', 36],
+  ['defuse', 37],
+  ['fanciful', 37],
+  ['fancying', 37],
+  ['fusing', 37],
+  ['hurried', 37],
+  ['hurrying', 37],
+  ['sturdier', 37],
+  ['sturdiest', 37],
+  ['babies', 38],
+  ['babyish', 38],
+  ['berries', 38],
+  ['boxes', 38],
+  ['brushes', 38],
+  ['buzzes', 38],
+  ['buzzing', 38],
+  ['catches', 38],
+  ['matches', 38],
+  ['presses', 38],
+  ['prewrap', 38],
+  ['wrapper', 38],
+  ['wrapping', 38],
+  ['wronger', 38],
+  ['inequal', 39],
+  ['inform', 39],
+  ['inhuman', 39],
+  ['busier', 40],
+  ['busiest', 40],
+  ['conform', 40],
+  ['conserve', 40],
+  ['darken', 40],
+  ['darkness', 40],
+  ['foxes', 40],
+  ['taxed', 40],
+  ['taxes', 40],
+  ['taxing', 40],
+  ['worried', 40],
+  ['worrying', 40],
+  ['later', 41],
+  ['latest', 41],
+  ['tried', 41],
+  ['trying', 41],
+  ['unfit', 41],
+  ['mighty', 42],
+  ['safely', 42],
+  ['safer', 42],
+  ['brotherly', 43],
+  ['carried', 43],
+  ['carrying', 43],
+  ['mothering', 43],
+  ['motherless', 43],
+  ['riser', 43],
+  ['rising', 43],
+  ['denied', 48],
+  ['denying', 48],
+  ['flyer', 48],
+  ['flying', 48],
+  ['stayed', 48],
+  ['staying', 48],
+  ['comer', 49],
+  ['manly', 49],
+  ['manning', 49],
+  ['loudly', 50],
+  ['movable', 50],
+  ['proudly', 50],
+  ['sounding', 50],
+  ['soundless', 50],
+  ['soundness', 50],
+  ['cloudless', 51],
+  ['editing', 51],
+  ['leaving', 51],
+  ['neater', 51],
+  ['neatness', 51],
+  ['womanly', 51],
+  ['defile', 53],
+  ['exact', 53],
+  ['exclaim', 53],
+  ['export', 53],
+  ['express', 53],
+  ['factful', 53],
+  ['filing', 53],
+  ['mainly', 53],
+  ['react', 53],
+  ['varied', 53],
+  ['varying', 53],
+  ['cities', 57],
+  ['copies', 57],
+  ['easing', 57],
+  ['holeless', 57],
+  ['pleasing', 57],
+  ['proclaim', 57],
+  ['sprayed', 57],
+  ['spraying', 57],
+  ['stories', 57],
+  ['straighten', 57],
+  ['famed', 58],
+  ['fameless', 58],
+  ['thoughtful', 58],
+  ['thoughtless', 58],
+  ['worthless', 58],
+  ['active', 59],
+  ['counted', 59],
+  ['counter', 59],
+  ['counting', 59],
+  ['founder', 59],
+  ['founding', 59],
+  ['inactive', 59],
+  ['placed', 59],
+  ['placing', 59],
+  ['texting', 59],
+  ['action', 61],
+  ['expression', 61],
+  ['featless', 61],
+  ['fluid', 61],
+  ['fluidly', 61],
+  ['grower', 61],
+  ['reaction', 61],
+  ['ruined', 61],
+  ['ruining', 61],
+  ['showing', 61],
+  ['underworld', 61],
+  ['blower', 65],
+  ['concept', 65],
+  ['detect', 65],
+  ['except', 65],
+  ['poisoning', 65],
+  ['progress', 65],
+  ['protect', 65],
+  ['protection', 65],
+  ['proving', 65],
+  ['reception', 65],
+  ['regress', 65],
+  ['thrower', 65],
+  ['anyone', 66],
+  ['causing', 66],
+  ['dejected', 66],
+  ['inject', 66],
+  ['knowing', 66],
+  ['pausing', 66],
+  ['project', 66],
+  ['projection', 66],
+  ['reject', 66],
+  ['siding', 66],
+  ['famous', 67],
+  ['furious', 67],
+  ['glorious', 67],
+  ['joyous', 67],
+  ['outer', 67],
+  ['poisonous', 67],
+  ['richer', 67],
+  ['richness', 67],
+  ['shoring', 67],
+  ['something', 67],
+  ['sorely', 67],
+  ['soreness', 67],
+  ['storer', 67],
+  ['storing', 67],
+  ['brainless', 69],
+  ['gaining', 69],
+  ['giving', 69],
+  ['painful', 69],
+  ['painless', 69],
+  ['raining', 69],
+  ['regain', 69],
+  ['cloudy', 70],
+  ['consent', 70],
+  ['cureless', 70],
+  ['curing', 70],
+  ['easy', 70],
+  ['furry', 70],
+  ['fuzzy', 70],
+  ['purer', 70],
+  ['purest', 70],
+  ['rainy', 70],
+  ['shiny', 70],
+  ['surely', 70],
+  ['sureness', 70],
+  ['tentless', 70],
+  ['windy', 70],
+  ['fryer', 71],
+  ['frying', 71],
+  ['phoning', 71],
+  ['photoing', 71],
+  ['shapeless', 71],
+  ['shaping', 71],
+  ['baseless', 72],
+  ['basing', 72],
+  ['contain', 72],
+  ['container', 72],
+  ['priming', 72],
+  ['retain', 72],
+  ['spinner', 72],
+  ['spinning', 72],
+  ['tinning', 72],
+  ['winner', 72],
+  ['winning', 72],
+  ['disagree', 75],
+  ['discount', 75],
+  ['dislike', 75],
+  ['displace', 75],
+  ['disprove', 75],
+  ['distrust', 75],
+  ['quarter', 76],
+  ['questing', 76],
+  ['quickly', 76],
+  ['quotable', 76],
+  ['quoting', 76],
+  ['artist', 77],
+  ['betting', 77],
+  ['breathless', 77],
+  ['dispel', 77],
+  ['expel', 77],
+  ['flatter', 77],
+  ['flattest', 77],
+  ['heading', 77],
+  ['headless', 77],
+  ['heavier', 77],
+  ['propel', 77],
+  ['repel', 77],
+  ['tourist', 77],
+  ['dutiful', 78],
+  ['failed', 78],
+  ['failing', 78],
+  ['railing', 78],
+  ['revise', 78],
+  ['revision', 78],
+  ['scoping', 78],
+  ['stateless', 78],
+  ['stating', 78],
+  ['tailing', 78],
+  ['briefer', 79],
+  ['briefly', 79],
+  ['chiefly', 79],
+  ['griefless', 79],
+  ['nieces', 79],
+  ['spiritless', 79],
+  ['deduce', 80],
+  ['graphic', 80],
+  ['heroic', 80],
+  ['physical', 80],
+  ['plainer', 80],
+  ['plainness', 80],
+  ['produce', 80],
+  ['producer', 80],
+  ['reduce', 80],
+  ['firstly', 81],
+  ['hopper', 81],
+  ['hopping', 81],
+  ['planted', 81],
+  ['planting', 81],
+  ['shipping', 81],
+  ['taleless', 81],
+  ['thirstless', 81],
+  ['thirsty', 81],
+  ['without', 81],
+  ['covering', 84],
+  ['groundless', 84],
+  ['pounding', 84],
+  ['rounder', 84],
+  ['roundest', 84],
+  ['southern', 84],
+  ['thousands', 84],
+  ['uncover', 84],
+  ['chancy', 85],
+  ['dangerous', 85],
+  ['planing', 85],
+  ['transform', 85],
+  ['transgress', 85],
+  ['transplant', 85],
+  ['transport', 85],
+  ['verseless', 85],
+  ['bolder', 86],
+  ['boldness', 86],
+  ['colder', 86],
+  ['coldest', 86],
+  ['confer', 86],
+  ['folding', 86],
+  ['holding', 86],
+  ['infer', 86],
+  ['older', 86],
+  ['oldest', 86],
+  ['prefer', 86],
+  ['refer', 86],
+  ['transfer', 86],
+  ['unfold', 86],
+  ['bidding', 88],
+  ['classed', 88],
+  ['coating', 88],
+  ['getting', 88],
+  ['roadless', 88],
+  ['sowing', 88],
+  ['voter', 88],
+  ['voting', 88],
+  ['athletic', 89],
+  ['cubing', 89],
+  ['cuter', 89],
+  ['cutest', 89],
+  ['hugeness', 89],
+  ['musing', 89],
+  ['construct', 90],
+  ['destruction', 90],
+  ['fashioning', 90],
+  ['instruct', 90],
+  ['instruction', 90],
+  ['magical', 90],
+  ['shaking', 90],
+  ['shaky', 90],
+  ['shedding', 90],
+  ['shouting', 90],
+  ['unfashion', 90],
+  ['ampler', 93],
+  ['depart', 93],
+  ['detain', 93],
+  ['fourer', 93],
+  ['littleness', 93],
+  ['middling', 93],
+  ['obstruct', 93],
+  ['obtain', 93],
+  ['settling', 93],
+  ['unsettle', 93],
+  ['halving', 94],
+  ['leafless', 94],
+  ['leafy', 94],
+  ['movement', 94],
+  ['placement', 94],
+  ['selfish', 94],
+  ['shipment', 94],
+  ['wolfish', 94],
+  ['basically', 95],
+  ['fainter', 95],
+  ['fainting', 95],
+  ['loafing', 95],
+  ['logically', 95],
+  ['magically', 95],
+  ['musically', 95],
+  ['sonless', 95],
+  ['tender', 95],
+  ['trainer', 95],
+  ['training', 95],
+  ['typing', 95],
+  ['wifeless', 95],
+  ['courting', 96],
+  ['defect', 96],
+  ['foremost', 96],
+  ['infect', 96],
+  ['lifeless', 96],
+  ['lively', 96],
+  ['perfect', 96],
+  ['perfectly', 96],
+  ['perform', 96],
+  ['reaching', 96],
+  ['reasoning', 96],
+  ['speaker', 96],
+  ['broomless', 97],
+  ['choosing', 97],
+  ['compel', 97],
+  ['compose', 97],
+  ['compress', 97],
+  ['cooler', 97],
+  ['coolness', 97],
+  ['loosen', 97],
+  ['looseness', 97],
+  ['roomy', 97],
+  ['sooner', 97],
+  ['concur', 98],
+  ['government', 98],
+  ['recur', 98],
+  ['shelfless', 98],
+  ['sleeping', 98],
+  ['sleepless', 98],
+  ['speechless', 98],
+  ['sunless', 98],
+  ['sunny', 98],
+  ['sweeter', 98],
+  ['sweetness', 98],
+  ['uncross', 98],
+  ['bedding', 99],
+  ['blotting', 99],
+  ['bugging', 99],
+  ['dimmer', 99],
+  ['dimmest', 99],
+  ['grabber', 99],
+  ['grabbing', 99],
+  ['legless', 99],
+  ['muddy', 99],
+  ['robber', 99],
+  ['robbing', 99],
+  ['starless', 99],
+  ['starry', 99],
+  ['boyhood', 100],
+  ['childhood', 100],
+  ['describe', 100],
+  ['longer', 100],
+  ['longing', 100],
+  ['loveless', 100],
+  ['loving', 100],
+  ['manhood', 100],
+  ['monthly', 100],
+  ['prescribe', 100],
+  ['ranger', 100],
+  ['ranging', 100],
+  ['commit', 101],
+  ['contest', 101],
+  ['joining', 101],
+  ['majors', 101],
+  ['oily', 101],
+  ['permit', 101],
+  ['protest', 101],
+  ['rejoin', 101],
+  ['remit', 101],
+  ['spoiled', 101],
+  ['spoiling', 101],
+  ['transmit', 101],
+  ['become', 107],
+  ['befriend', 107],
+  ['behave', 107],
+  ['belong', 107],
+  ['chinless', 107],
+  ['critical', 107],
+  ['dresser', 107],
+  ['dressing', 107],
+  ['frogs', 107],
+  ['gunless', 107],
+  ['hitting', 107],
+  ['justness', 107],
+  ['netting', 107],
+  ['piggish', 107],
+  ['rating', 107],
+  ['spotless', 107],
+  ['spotting', 107],
+  ['tonning', 107],
+  ['tripping', 107],
+  ['unjust', 107],
+  ['venting', 107],
+  ['verging', 107],
+  ['consist', 108],
+  ['coupling', 108],
+  ['desist', 108],
+  ['doubling', 108],
+  ['driver', 108],
+  ['driving', 108],
+  ['familyless', 108],
+  ['import', 108],
+  ['impress', 108],
+  ['impure', 108],
+  ['incur', 108],
+  ['insist', 108],
+  ['persist', 108],
+  ['resist', 108],
+  ['troublesome', 108],
+  ['troubling', 108],
+  ['convert', 109],
+  ['converter', 109],
+  ['gulfless', 109],
+  ['invert', 109],
+  ['knifeless', 109],
+  ['prettier', 109],
+  ['prettiest', 109],
+  ['puffing', 109],
+  ['puffy', 109],
+  ['revert', 109],
+  ['shaving', 109],
+  ['strained', 109],
+  ['straining', 109],
+  ['subhuman', 109],
+  ['submerge', 109],
+  ['submit', 109],
+  ['subscribe', 109],
+  ['subtract', 109],
+  ['subvert', 109],
+  ['bodyless', 113],
+  ['budding', 113],
+  ['carring', 113],
+  ['committed', 113],
+  ['cutting', 113],
+  ['gassy', 113],
+  ['gummy', 113],
+  ['hogging', 113],
+  ['panning', 113],
+  ['permitted', 113],
+  ['puzzling', 113],
+  ['redness', 113],
+  ['referred', 113],
+  ['solving', 113],
+  ['tableless', 113],
+  ['topping', 113],
+  ['transmitted', 113],
+  ['weekly', 113],
+  ['wisely', 113],
+  ['wiser', 113],
+  ['admit', 114],
+  ['advise', 114],
+  ['builder', 114],
+  ['building', 114],
+  ['conceive', 114],
+  ['deceive', 114],
+  ['lakeless', 114],
+  ['lakeside', 114],
+  ['perceive', 114],
+  ['plier', 114],
+  ['receive', 114],
+  ['added', 116],
+  ['adding', 116],
+  ['consume', 116],
+  ['friendship', 116],
+  ['hardship', 116],
+  ['presume', 116],
+  ['resume', 116],
+  ['circling', 117],
+  ['complete', 117],
+  ['completely', 117],
+  ['deplete', 117],
+  ['deplore', 117],
+  ['explore', 117],
+  ['implore', 117],
+  ['preview', 117],
+  ['scienceless', 117],
+  ['watcher', 117],
+  ['watching', 117],
+  ['actor', 118],
+  ['demote', 118],
+  ['editor', 118],
+  ['promote', 118],
+  ['remote', 118],
+  ['dieting', 119],
+  ['freezer', 119],
+  ['freezing', 119],
+  ['indict', 119],
+  ['predict', 119],
+  ['prediction', 119],
+  ['screening', 119],
+  ['speeding', 119],
+  ['concise', 120],
+  ['confess', 120],
+  ['confession', 120],
+  ['exceed', 120],
+  ['excise', 120],
+  ['precise', 120],
+  ['proceed', 120],
+  ['profess', 120],
+  ['beautiful', 121],
+  ['married', 121],
+  ['marrying', 121],
+  ['overdrive', 121],
+  ['overgrown', 121],
+  ['overload', 121],
+  ['overwork', 121],
+  ['pointing', 121],
+  ['pointless', 121],
+  ['readying', 121],
+  ['valueless', 121],
+  ['batting', 122],
+  ['capping', 122],
+  ['digging', 122],
+  ['foggy', 122],
+  ['popping', 122],
+  ['setting', 122],
+  ['sitting', 122],
+  ['stirring', 122],
+  ['tipping', 122],
+  ['cordless', 124],
+  ['insane', 124],
+  ['merrier', 124],
+  ['missing', 124],
+  ['posting', 124],
+  ['sanely', 124],
+  ['densely', 125],
+  ['denser', 125],
+  ['simpler', 125],
+  ['excess', 126],
+  ['magician', 126],
+  ['musician', 126],
+  ['process', 126],
+  ['processing', 126],
+  ['recess', 126],
+  ['introduce', 127],
+  ['caving', 128],
+  ['interact', 128],
+  ['intercept', 128],
+  ['intersect', 128],
+  ['interview', 128],
+  ['mending', 128],
+  ['superhuman', 128],
+  ['supervise', 128],
+  ['tenseness', 128],
+  ['constant', 130],
+  ['constantly', 130],
+  ['gravely', 130],
+  ['graveness', 130],
+  ['ideally', 130],
+  ['instant', 130],
+  ['scarcely', 130],
+  ['scarceness', 130],
+  ['trotting', 130],
+  ['aftering', 131],
+  ['breaker', 131],
+  ['breaking', 131],
+  ['disturb', 131],
+  ['disturbing', 131],
+  ['heroism', 131],
+  ['medical', 131],
+  ['perturb', 131],
+  ['tourism', 131],
+  ['civilise', 132],
+  ['conclude', 132],
+  ['exclude', 132],
+  ['humanise', 132],
+  ['include', 132],
+  ['preclude', 132],
+  ['provide', 132],
+  ['provider', 132],
+  ['airless', 133],
+  ['ballless', 133],
+  ['birthless', 133],
+  ['nooning', 133],
+  ['standing', 134],
+  ['teenish', 134],
+  ['withstand', 134],
+  ['nineteen', 135],
+  ['seventeen', 135],
+  ['collarless', 136],
+  ['imageless', 136]
+];
+</script>
+<script>
+// Stepped learning progression (decided 2026-06-12, replaces FSRS).
+// A word sits on a rung of CONFIG.STEPS; its next review is that many
+// days away. Grades:
+//   1 = Wrong   -> back to the first rung, lapse recorded
+//   3 = Correct -> climb one rung
+//   4 = Easy    -> climb two rungs
+//   0 = Hold    -> stay on the current rung (Phase 2: OCR thinks the
+//                  word may be wrong even though the student marked it
+//                  correct - no progress until it is seen clean again)
+const Sched = (() => {
+  function steps() {
+    return CONFIG.STEPS;
+  }
+
+  function cap(step) {
+    return Math.min(Math.max(step, 0), steps().length - 1);
+  }
+
+  function intervalDays(step) {
+    return steps()[cap(step)];
+  }
+
+  function grade(state, g) {
+    const prev = state || { step: -1, reps: 0, lapses: 0 };
+    let step;
+    if (g === 1) {
+      step = 0;
+    } else if (g === 0) {
+      step = cap(Math.max(prev.step, 0));
+    } else {
+      step = cap(Math.max(prev.step, -1) + (g === 4 ? 2 : 1));
+    }
+    return {
+      step,
+      reps: prev.reps + 1,
+      lapses: prev.lapses + (g === 1 ? 1 : 0),
+      interval: intervalDays(step)
+    };
+  }
+
+  return { grade, intervalDays };
+})();
+</script>
+<script>
+// Practice-code decode + report encode.
+// Code wire format (before compression), pipe-separated:
+//   S1|<stuId>|<genDate YYYY-MM-DD>|<requestId or ->|<entries>
+// entries: ';'-separated. Each entry is a ref, optionally with state:
+//   ref                       -> new word, no scheduler state
+//   ref,step,due,reps,lapses  -> seeded word (step = ladder rung,
+//                                due = day offset from genDate)
+// ref: 'i' + base36 index into MASTER, or 'w' + literal word.
+// The whole string is UTF-8 -> raw deflate -> base64url (no padding).
+// In links it rides as the URL fragment: <app-url>#C<encoded>
+const Codec = (() => {
+  function b64uToBytes(str) {
+    const b64 = str.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = b64 + '==='.slice((b64.length + 3) % 4);
+    const bin = atob(pad);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+
+  function bytesToB64u(bytes) {
+    let bin = '';
+    bytes.forEach(b => { bin += String.fromCharCode(b); });
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_')
+      .replace(/=+$/, '');
+  }
+
+  async function inflate(bytes) {
+    const ds = new DecompressionStream('deflate-raw');
+    const stream = new Blob([bytes]).stream().pipeThrough(ds);
+    const buf = await new Response(stream).arrayBuffer();
+    return new TextDecoder().decode(buf);
+  }
+
+  async function deflate(text) {
+    const cs = new CompressionStream('deflate-raw');
+    const stream = new Blob([new TextEncoder().encode(text)])
+      .stream().pipeThrough(cs);
+    const buf = await new Response(stream).arrayBuffer();
+    return new Uint8Array(buf);
+  }
+
+  function parseEntry(raw, genDate) {
+    const f = raw.split(',');
+    const ref = f[0];
+    let word;
+    if (ref[0] === 'i') {
+      const row = MASTER[parseInt(ref.slice(1), 36)];
+      if (!row) return null;
+      word = row[0];
+    } else if (ref[0] === 'w') {
+      word = ref.slice(1).toLowerCase();
+    } else {
+      return null;
+    }
+    if (f.length < 5) return { word, state: null };
+    const due = new Date(genDate);
+    due.setDate(due.getDate() + parseInt(f[2], 10));
+    return {
+      word,
+      state: {
+        step: parseInt(f[1], 10),
+        due: due.toISOString().slice(0, 10),
+        reps: parseInt(f[3], 10),
+        lapses: parseInt(f[4], 10)
+      }
+    };
+  }
+
+  async function decode(encoded) {
+    const text = await inflate(b64uToBytes(encoded.trim()));
+    const parts = text.split('|');
+    if (parts[0] !== 'S1' || parts.length !== 5) {
+      throw new Error('Unrecognised code format');
+    }
+    const [, stu, genDate, req, entryStr] = parts;
+    const entries = entryStr
+      ? entryStr.split(';').map(e => parseEntry(e, genDate)).filter(Boolean)
+      : [];
+    return { stu, genDate, req: req === '-' ? null : req, entries };
+  }
+
+  async function encodeReport(obj) {
+    return bytesToB64u(await deflate(JSON.stringify(obj)));
+  }
+
+  return { decode, encodeReport };
+})();
+</script>
+<script>
+// Session flow, persistence, code import, reporting, template printing.
+const App = (() => {
+  const STORE_KEY = 'spelling-app-v1';
+
+  let db = null;
+  let session = null;
+
+  // ---------- persistence ----------
+
+  function blankDb() {
+    return {
+      stu: null,
+      deck: {},          // word -> {s,d,due,reps,lapses,added,seenToday}
+      order: [],         // insertion order, drives new-card sequence
+      sessions: [],
+      pendingReq: null,  // {id, requestedAt, fulfilled:bool}
+      doneReqs: [],
+      lastCodeDate: null
+    };
+  }
+
+  function load() {
+    try {
+      const raw = localStorage.getItem(STORE_KEY);
+      db = raw ? JSON.parse(raw) : blankDb();
+    } catch (e) {
+      db = blankDb();
+    }
+  }
+
+  function save() {
+    localStorage.setItem(STORE_KEY, JSON.stringify(db));
+  }
+
+  function today() {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  let toastTimer = null;
+
+  function setStatus(msg, isError) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.toggle('error', !!isError);
+    t.classList.remove('hidden');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.add('hidden'), 6000);
+  }
+
+
+  // ---------- code import ----------
+
+  async function applyCode(encoded) {
+    const code = await Codec.decode(encoded);
+    if (db.stu && db.stu !== code.stu) {
+      const ok = confirm(
+        'This code is for ' + code.stu + ' but this device holds practice ' +
+        'for ' + db.stu + '. Replace everything with the new student?');
+      if (!ok) return false;
+      db = blankDb();
+    }
+    db.stu = code.stu;
+    db.lastCodeDate = code.genDate;
+    let added = 0, seeded = 0;
+    for (const e of code.entries) {
+      if (db.deck[e.word]) continue; // local state wins - it is newer
+      if (e.state) {
+        db.deck[e.word] = Object.assign({ added: code.genDate }, e.state);
+        seeded++;
+      } else {
+        db.deck[e.word] = {
+          step: -1, due: null, reps: 0, lapses: 0, added: today()
+        };
+        added++;
+      }
+      db.order.push(e.word);
+    }
+    if (code.req && !db.doneReqs.includes(code.req)) {
+      db.pendingReq = { id: code.req, requestedAt: today(), fulfilled: false };
+    }
+    save();
+    return { added, seeded, total: Object.keys(db.deck).length };
+  }
+
+  // ---------- session building ----------
+
+  // A session is pages of up to PAGE_SIZE words. Each page runs three
+  // phases in order: dictate (student writes all words, no answers),
+  // photo (pre-mark photo of the page, before anything is revealed),
+  // check (answers shown one by one, student grades each).
+  function buildSession() {
+    const t = today();
+    const due = Object.entries(db.deck)
+      .filter(([, st]) => st.reps > 0 && st.due && st.due <= t)
+      .sort((a, b) => a[1].due.localeCompare(b[1].due))
+      .slice(0, CONFIG.MAX_DUE_PER_SESSION)
+      .map(([w]) => w);
+    const fresh = db.order
+      .filter(w => db.deck[w] && db.deck[w].reps === 0)
+      .slice(0, CONFIG.NEW_PER_DAY);
+    const words = due.concat(fresh);
+    if (!words.length) return null;
+    return {
+      words, page: 0, di: 0, ci: 0,
+      fixup: [], results: {}, times: {},
+      start: Date.now(), wordShownAt: null,
+      counts: { again: 0, good: 0, easy: 0 },
+      photoPages: 0, photosTaken: 0
+    };
+  }
+
+  function pageWords() {
+    const from = session.page * CONFIG.PAGE_SIZE;
+    return session.words.slice(from, from + CONFIG.PAGE_SIZE);
+  }
+
+  function gradeWord(word, grade) {
+    const st = db.deck[word];
+    const next = Sched.grade(st, grade);
+    const dueDate = new Date();
+    dueDate.setDate(dueDate.getDate() + next.interval);
+    db.deck[word] = Object.assign({}, st, {
+      step: next.step,
+      reps: next.reps,
+      lapses: next.lapses,
+      due: dueDate.toISOString().slice(0, 10)
+    });
+    save();
+  }
+
+  // ---------- speech ----------
+
+  let voice = null;
+
+  function pickVoice() {
+    const all = speechSynthesis.getVoices();
+    voice = all.find(v => v.lang.startsWith('en-AU')) ||
+      all.find(v => v.lang.startsWith('en-GB')) ||
+      all.find(v => v.lang.startsWith('en')) || null;
+  }
+
+  function speak(word) {
+    try {
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(word);
+      if (voice) u.voice = voice;
+      u.rate = 0.85;
+      speechSynthesis.speak(u);
+    } catch (e) { /* no speech support - visual flow still works */ }
+  }
+
+  // ---------- screens ----------
+
+  const $ = id => document.getElementById(id);
+
+  function show(screenId) {
+    document.querySelectorAll('.screen').forEach(el => {
+      el.classList.toggle('active', el.id === screenId);
+    });
+  }
+
+  function renderHome() {
+    if (!db.stu) { show('scr-welcome'); return; }
+    const t = today();
+    const dueN = Object.values(db.deck)
+      .filter(st => st.reps > 0 && st.due && st.due <= t).length;
+    const freshN = Object.values(db.deck).filter(st => st.reps === 0).length;
+    $('home-due').textContent = dueN;
+    $('home-new').textContent = Math.min(freshN, CONFIG.NEW_PER_DAY);
+    $('home-total').textContent = Object.keys(db.deck).length;
+    $('btn-start').disabled = dueN + freshN === 0;
+    renderBanner();
+    show('scr-home');
+  }
+
+  function renderBanner() {
+    const b = $('req-banner');
+    const pending = db.pendingReq && !db.pendingReq.fulfilled;
+    b.classList.toggle('hidden', !pending);
+  }
+
+  function startSession() {
+    session = buildSession();
+    if (!session) return;
+    showDictate();
+  }
+
+  function showDictate() {
+    const word = pageWords()[session.di];
+    const overall = session.page * CONFIG.PAGE_SIZE + session.di + 1;
+    $('dict-count').textContent =
+      'Word ' + overall + ' of ' + session.words.length;
+    $('dict-box').textContent = 'Box ' + (session.di + 1);
+    session.wordShownAt = Date.now();
+    show('scr-dictate');
+    speak(word);
+  }
+
+  function dictateNext() {
+    const word = pageWords()[session.di];
+    session.times[word] =
+      Math.round((Date.now() - session.wordShownAt) / 1000);
+    session.di++;
+    if (session.di >= pageWords().length) {
+      showPhoto();
+    } else {
+      showDictate();
+    }
+  }
+
+  function showPhoto() {
+    session.photoPages++;
+    $('photo-status').textContent = '';
+    $('photo-input').value = '';
+    show('scr-photo');
+  }
+
+  function photoTaken() {
+    if (!$('photo-input').files.length) return;
+    session.photosTaken++;
+    $('photo-status').textContent =
+      'Photo taken — your page is on record.';
+    // Phase 2: the photo is handed to the on-device OCR check here.
+  }
+
+  function showCheck() {
+    const word = pageWords()[session.ci];
+    const overall = session.page * CONFIG.PAGE_SIZE + session.ci + 1;
+    $('check-count').textContent =
+      'Word ' + overall + ' of ' + session.words.length;
+    $('check-box').textContent = 'Box ' + (session.ci + 1);
+    $('word-reveal').textContent = word;
+    show('scr-check');
+    speak(word);
+  }
+
+  function grade(g) {
+    const word = pageWords()[session.ci];
+    session.results[word] = g;
+    session.counts[g === 1 ? 'again' : g === 3 ? 'good' : 'easy']++;
+    gradeWord(word, g);
+    if (g === 1) session.fixup.push(word);
+    session.ci++;
+    if (session.ci < pageWords().length) {
+      showCheck();
+      return;
+    }
+    session.page++;
+    session.di = 0;
+    session.ci = 0;
+    if (session.page * CONFIG.PAGE_SIZE < session.words.length) {
+      showDictate();
+    } else if (session.fixup.length) {
+      startFixup();
+    } else {
+      endSession();
+    }
+  }
+
+  let fixupIdx = 0;
+
+  function startFixup() {
+    fixupIdx = 0;
+    showFixupWord();
+  }
+
+  function showFixupWord() {
+    const word = session.fixup[fixupIdx];
+    $('fix-count').textContent =
+      'Fix-up ' + (fixupIdx + 1) + ' of ' + session.fixup.length;
+    $('fix-word').textContent = word;
+    show('scr-fixup');
+    speak(word);
+  }
+
+  function fixupDone() {
+    fixupIdx++;
+    if (fixupIdx >= session.fixup.length) { endSession(); }
+    else { showFixupWord(); }
+  }
+
+  function endSession() {
+    const secs = Math.round((Date.now() - session.start) / 1000);
+    const times = Object.values(session.times).sort((a, b) => a - b);
+    db.sessions.push({
+      d: today(),
+      secs,
+      done: session.words.length,
+      again: session.counts.again,
+      good: session.counts.good,
+      easy: session.counts.easy,
+      medSecs: times.length ? times[Math.floor(times.length / 2)] : 0,
+      pages: session.photoPages,
+      photos: session.photosTaken
+    });
+    if (db.sessions.length > 200) db.sessions = db.sessions.slice(-200);
+    save();
+    $('sum-done').textContent = session.words.length;
+    $('sum-right').textContent = session.counts.good + session.counts.easy;
+    $('sum-wrong').textContent = session.counts.again;
+    renderBanner();
+    const b = $('req-banner-end');
+    b.classList.toggle('hidden',
+      !(db.pendingReq && !db.pendingReq.fulfilled));
+    session = null;
+    show('scr-summary');
+  }
+
+  // ---------- reporting ----------
+
+  function buildReport() {
+    return {
+      v: 1,
+      stu: db.stu,
+      req: db.pendingReq ? db.pendingReq.id : null,
+      exported: new Date().toISOString(),
+      app: CONFIG.VERSION,
+      words: Object.entries(db.deck).map(([w, st]) => ({
+        w, step: st.step, due: st.due, reps: st.reps, lapses: st.lapses
+      })),
+      sessions: db.sessions.slice(-60)
+    };
+  }
+
+  async function sendReport() {
+    const report = buildReport();
+    const summary =
+      'Spelling practice report - ' + db.stu + '\n' +
+      'Words in deck: ' + report.words.length + '\n' +
+      'Sessions on record: ' + report.sessions.length + '\n' +
+      (db.pendingReq ? 'Request: ' + db.pendingReq.id + '\n' : '') +
+      'Exported: ' + report.exported.slice(0, 10) + '\n\n';
+    const packed = await Codec.encodeReport(report);
+    let body;
+    if (packed.length < 1600) {
+      body = summary + '---REPORT---\n' + packed;
+    } else {
+      downloadReport(report);
+      body = summary +
+        'The full report file has been downloaded on this device - ' +
+        'please attach it to this email before sending.';
+    }
+    markFulfilled();
+    location.href = 'mailto:' + CONFIG.TEACHER_EMAIL +
+      '?subject=' + encodeURIComponent(
+        'Spelling report ' + db.stu +
+        (db.doneReqs.length ? ' (' + db.doneReqs.at(-1) + ')' : '')) +
+      '&body=' + encodeURIComponent(body);
+  }
+
+  function downloadReport(report) {
+    report = report || buildReport();
+    const blob = new Blob([JSON.stringify(report, null, 1)],
+      { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'spelling-report-' + db.stu + '-' + today() + '.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  function markFulfilled() {
+    if (db.pendingReq) {
+      db.doneReqs.push(db.pendingReq.id);
+      db.pendingReq.fulfilled = true;
+      save();
+      renderBanner();
+    }
+  }
+
+  // ---------- template printing ----------
+
+  function printTemplates() {
+    const pages = 4;
+    let html = '';
+    for (let p = 0; p < pages; p++) {
+      html += '<div class="tpl-page"><div class="tpl-corner tl"></div>' +
+        '<div class="tpl-corner tr"></div>' +
+        '<div class="tpl-corner bl"></div>' +
+        '<div class="tpl-corner br"></div>' +
+        '<div class="tpl-head">Spelling practice &mdash; ' +
+        'name: ________________ &nbsp; date: ________</div>';
+      for (let i = 1; i <= CONFIG.PAGE_SIZE; i++) {
+        html += '<div class="tpl-row"><span class="tpl-num">' + i +
+          '</span><span class="tpl-line"></span>' +
+          '<span class="tpl-mark"></span></div>';
+      }
+      html += '</div>';
+    }
+    $('print-area').innerHTML = html;
+    window.print();
+  }
+
+  // ---------- import via paste ----------
+
+  async function importPasted() {
+    const box = [$('code-input'), $('code-input2')]
+      .find(el => el && el.value.trim());
+    if (!box) return;
+    // Accept a full link, a "#C..." fragment, or a bare code. Codes are
+    // base64url, so whitespace from email line-wrapping is stripped.
+    // Never strip a bare leading "C" - codes can legitimately start
+    // with one; only the "#C" marker is a prefix.
+    let raw = box.value.replace(/\s+/g, '');
+    const marker = raw.lastIndexOf('#C');
+    if (marker !== -1) raw = raw.slice(marker + 2);
+    if (!raw) return;
+    try {
+      const res = await applyCode(raw);
+      if (res) {
+        box.value = '';
+        setStatus('Loaded: ' + res.added + ' new word' +
+          (res.added === 1 ? '' : 's') +
+          (res.seeded ? ', ' + res.seeded + ' restored' : '') +
+          '. Deck now has ' + res.total + ' words.');
+        renderHome();
+      }
+    } catch (e) {
+      setStatus('That code could not be read. ' +
+        'Check it was copied completely.', true);
+    }
+  }
+
+  // ---------- init ----------
+
+  async function init() {
+    load();
+    if (navigator.storage && navigator.storage.persist) {
+      navigator.storage.persist();
+    }
+    speechSynthesis.onvoiceschanged = pickVoice;
+    pickVoice();
+
+    $('btn-start').onclick = startSession;
+    $('btn-dict-next').onclick = dictateNext;
+    $('photo-input').onchange = photoTaken;
+    $('btn-photo-continue').onclick = showCheck;
+    $('btn-again').onclick = () => grade(1);
+    $('btn-good').onclick = () => grade(3);
+    $('btn-easy').onclick = () => grade(4);
+    $('btn-speak').onclick = () =>
+      session && speak(pageWords()[session.di]);
+    $('btn-check-speak').onclick = () =>
+      session && speak(pageWords()[session.ci]);
+    $('btn-fix-speak').onclick = () =>
+      session && speak(session.fixup[fixupIdx]);
+    $('btn-fix-done').onclick = fixupDone;
+    $('btn-sum-home').onclick = renderHome;
+    $('btn-import').onclick = importPasted;
+    $('btn-import-welcome').onclick = importPasted;
+    document.querySelectorAll('.btn-send-report').forEach(b => {
+      b.onclick = sendReport;
+    });
+    $('btn-menu').onclick = () => $('menu').classList.toggle('hidden');
+    $('menu-report').onclick = () => {
+      $('menu').classList.add('hidden'); sendReport();
+    };
+    $('menu-backup').onclick = () => {
+      $('menu').classList.add('hidden'); downloadReport();
+    };
+    $('menu-print').onclick = () => {
+      $('menu').classList.add('hidden'); printTemplates();
+    };
+    $('menu-code').onclick = () => {
+      $('menu').classList.add('hidden');
+      $('code-entry').classList.remove('hidden');
+    };
+
+    const hash = location.hash;
+    if (hash.startsWith('#C')) {
+      history.replaceState(null, '', location.pathname + location.search);
+      try {
+        const res = await applyCode(hash.slice(2));
+        if (res) {
+          setStatus('Loaded: ' + res.added + ' new word' +
+            (res.added === 1 ? '' : 's') +
+            (res.seeded ? ', ' + res.seeded + ' restored' : '') + '.');
+        }
+      } catch (e) {
+        setStatus('This link’s code could not be read. ' +
+          'You can paste it manually instead.', true);
+      }
+    }
+    renderHome();
+
+    if ('serviceWorker' in navigator &&
+        location.protocol === 'https:') {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    }
+  }
+
+  return { init };
+})();
+
+document.addEventListener('DOMContentLoaded', App.init);
+</script>
+</body>
+</html>

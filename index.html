@@ -182,15 +182,12 @@ textarea {
   <h1 id="dict-box" class="boxno"></h1>
   <button id="btn-speak" class="speak" aria-label="Say the word again">
     &#128266; Hear it again</button>
-  <p class="hint">Listen, then write the word in that box on your page.
-     No answers yet — they come after the photo.</p>
-  <button id="btn-dict-next" class="primary big">Written it — next word</button>
+  <button id="btn-dict-next" class="primary big">Next word</button>
 </section>
 
 <section id="scr-photo" class="screen">
   <h1>Photograph your page</h1>
-  <p class="hint">Before any answers are shown, take one photo of the
-     whole page. Line up all four black corner squares in the shot.</p>
+  <p class="hint">All four black corners in the shot.</p>
   <label class="primary big photo-btn">
     &#128247; Take the photo
     <input id="photo-input" type="file" accept="image/*"
@@ -204,10 +201,9 @@ textarea {
   <p id="check-count" class="count"></p>
   <h1 id="check-box" class="boxno"></h1>
   <div id="word-reveal" class="reveal"></div>
-  <button id="btn-check-speak" class="speak" aria-label="Say the word">
-    &#128266; Hear it</button>
+  <button id="btn-check-speak" class="speak" aria-label="Spell it again">
+    &#128266; Spell it again</button>
   <div class="grades">
-    <p class="hint">Look at that box on your page — did you spell it right?</p>
     <button id="btn-again" class="g-again">&#10007; Wrong</button>
     <button id="btn-good" class="g-good">&#10003; Correct</button>
     <button id="btn-easy" class="g-easy">Easy</button>
@@ -216,7 +212,7 @@ textarea {
 
 <section id="scr-fixup" class="screen">
   <p id="fix-count" class="count"></p>
-  <p class="hint">Write this word correctly on your page:</p>
+  <p class="hint">Write it correctly:</p>
   <div id="fix-word" class="reveal"></div>
   <button id="btn-fix-speak" class="speak" aria-label="Say it again">
     &#128266; Hear it again</button>
@@ -247,7 +243,7 @@ textarea {
 // NEVER reorder or delete entries. extract_words.py appends only.
 const CONFIG = {
   APP_NAME: 'Spelling Practice',
-  VERSION: '1.1.0',
+  VERSION: '1.2.0',
   TEACHER_NAME: 'Mr Sproule',
   TEACHER_EMAIL: 'tspr@tc.vic.edu.au',
   NEW_PER_DAY: 5,
@@ -1362,14 +1358,32 @@ const App = (() => {
       all.find(v => v.lang.startsWith('en')) || null;
   }
 
+  function utter(text, rate) {
+    const u = new SpeechSynthesisUtterance(text);
+    if (voice) u.voice = voice;
+    u.rate = rate;
+    speechSynthesis.speak(u);
+  }
+
   function speak(word) {
     try {
       speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(word);
-      if (voice) u.voice = voice;
-      u.rate = 0.85;
-      speechSynthesis.speak(u);
+      utter(word, 0.85);
     } catch (e) { /* no speech support - visual flow still works */ }
+  }
+
+  // Check/fix-up phases: say the word, spell it letter by letter, say
+  // it again - matching the tutoring app's correction behaviour.
+  function speakSpelled(word) {
+    try {
+      speechSynthesis.cancel();
+      utter(word, 0.85);
+      const letters = word.split('')
+        .map(ch => ch === "'" ? 'apostrophe' : ch)
+        .join(', ');
+      utter(letters, 0.8);
+      utter(word, 0.85);
+    } catch (e) { /* no speech support */ }
   }
 
   // ---------- screens ----------
@@ -1454,7 +1468,7 @@ const App = (() => {
     $('check-box').textContent = 'Box ' + (session.ci + 1);
     $('word-reveal').textContent = word;
     show('scr-check');
-    speak(word);
+    speakSpelled(word);
   }
 
   function grade(g) {
@@ -1493,7 +1507,7 @@ const App = (() => {
       'Fix-up ' + (fixupIdx + 1) + ' of ' + session.fixup.length;
     $('fix-word').textContent = word;
     show('scr-fixup');
-    speak(word);
+    speakSpelled(word);
   }
 
   function fixupDone() {
@@ -1664,9 +1678,9 @@ const App = (() => {
     $('btn-speak').onclick = () =>
       session && speak(pageWords()[session.di]);
     $('btn-check-speak').onclick = () =>
-      session && speak(pageWords()[session.ci]);
+      session && speakSpelled(pageWords()[session.ci]);
     $('btn-fix-speak').onclick = () =>
-      session && speak(session.fixup[fixupIdx]);
+      session && speakSpelled(session.fixup[fixupIdx]);
     $('btn-fix-done').onclick = fixupDone;
     $('btn-sum-home').onclick = renderHome;
     $('btn-import').onclick = importPasted;

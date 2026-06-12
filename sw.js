@@ -1,5 +1,6 @@
-const CACHE = 'spelling-app-v1.2.0';
-const ASSETS = ['./', './index.html', './manifest.webmanifest'];
+const CACHE = 'spelling-app-v1.3.0';
+const ASSETS = ['./', './index.html', './template.html',
+  './manifest.webmanifest'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)));

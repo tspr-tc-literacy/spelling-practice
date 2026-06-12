@@ -1,4 +1,4 @@
-const CACHE = 'spelling-app-v1.0.0';
+const CACHE = 'spelling-app-v1.2.0';
 const ASSETS = ['./', './index.html', './manifest.webmanifest'];
 
 self.addEventListener('install', e => {

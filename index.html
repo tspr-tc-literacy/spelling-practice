@@ -99,34 +99,6 @@ textarea {
   background: #2e6b3a; color: #fff; font-size: 15px; text-align: center;
 }
 #toast.error { background: #a32d2d; }
-#print-area { display: none; }
-
-@media print {
-  body * { visibility: hidden; }
-  #print-area, #print-area * { visibility: visible; }
-  #print-area { display: block; position: absolute; left: 0; top: 0; }
-  .tpl-page {
-    page-break-after: always; position: relative; width: 100%;
-    height: 96vh; padding: 14mm 12mm;
-  }
-  .tpl-corner {
-    position: absolute; width: 8mm; height: 8mm; background: #000;
-  }
-  .tpl-corner.tl { top: 4mm; left: 4mm; }
-  .tpl-corner.tr { top: 4mm; right: 4mm; }
-  .tpl-corner.bl { bottom: 4mm; left: 4mm; }
-  .tpl-corner.br { bottom: 4mm; right: 4mm; }
-  .tpl-head { font-size: 12pt; margin-bottom: 8mm; }
-  .tpl-row {
-    display: flex; align-items: flex-end; height: 18mm;
-    border-bottom: 1pt solid #333; margin-bottom: 4mm;
-  }
-  .tpl-num { font-size: 12pt; width: 10mm; }
-  .tpl-line { flex: 1; }
-  .tpl-mark {
-    width: 14mm; border-left: 1pt solid #999; height: 12mm;
-  }
-}
 </style>
 </head>
 <body>
@@ -235,21 +207,19 @@ textarea {
 
 </main>
 
-<div id="print-area"></div>
-
 <script>
 // Spelling Practice App - master word list + config.
 // MASTER is index-stable: codes reference words by position.
 // NEVER reorder or delete entries. extract_words.py appends only.
 const CONFIG = {
   APP_NAME: 'Spelling Practice',
-  VERSION: '1.2.0',
+  VERSION: '1.3.0',
   TEACHER_NAME: 'Mr Sproule',
   TEACHER_EMAIL: 'tspr@tc.vic.edu.au',
   NEW_PER_DAY: 5,
   MAX_DUE_PER_SESSION: 20,
   PAGE_SIZE: 10,
-  STEPS: [1, 2, 4, 7, 14, 30, 60, 120]
+  LADDER: [1, 2, 4, 7]
 };
 const MASTER = [
   ['freshest', 1],
@@ -1083,47 +1053,109 @@ const MASTER = [
 ];
 </script>
 <script>
-// Stepped learning progression (decided 2026-06-12, replaces FSRS).
-// A word sits on a rung of CONFIG.STEPS; its next review is that many
-// days away. Grades:
-//   1 = Wrong   -> back to the first rung, lapse recorded
-//   3 = Correct -> climb one rung
-//   4 = Easy    -> climb two rungs
-//   0 = Hold    -> stay on the current rung (Phase 2: OCR thinks the
-//                  word may be wrong even though the student marked it
-//                  correct - no progress until it is seen clean again)
+// Hybrid scheduler (decided 2026-06-12): a word's first week runs on a
+// fixed ladder; FSRS takes over once the word graduates.
+//
+// Ladder phase (ph 'L', rungs over CONFIG.LADDER = [1, 2, 4, 7] days):
+//   Wrong   -> back to the first rung, lapse recorded
+//   Correct -> climb one rung
+//   Easy    -> climb two rungs, CAPPED at the top rung - nothing
+//              leaves the week without passing a 7-day review
+//   Graduation: Correct or Easy at the top rung seeds FSRS from the
+//   interval just held and applies that review.
+// FSRS phase (ph 'F', FSRS-4.5, retention 0.9):
+//   Wrong   -> stability cut by the forget formula, seen again
+//              tomorrow, stays graduated
+//   Correct/Easy -> standard FSRS growth
+// Hold (grade 0, either phase): no progress at all - reschedules at
+// the current spacing. Used when OCR suspects a ticked word is wrong.
 const Sched = (() => {
-  function steps() {
-    return CONFIG.STEPS;
+  const W = [0.4872, 1.4003, 3.7145, 13.8206, 5.1618, 1.2298, 0.8975,
+    0.031, 1.6474, 0.1367, 1.0461, 2.1072, 0.0793, 0.3246, 1.587,
+    0.2272, 2.8755];
+  const DECAY = -0.5;
+  const FACTOR = 19 / 81;
+  const RETENTION = 0.9;
+
+  const clampD = d => Math.min(10, Math.max(1, d));
+  const ladder = () => CONFIG.LADDER;
+  const top = () => ladder().length - 1;
+
+  function fsrsInterval(s) {
+    return Math.max(1,
+      Math.round((s / FACTOR) * (Math.pow(RETENTION, 1 / DECAY) - 1)));
   }
 
-  function cap(step) {
-    return Math.min(Math.max(step, 0), steps().length - 1);
+  function retrievability(elapsed, s) {
+    if (elapsed <= 0) return 1;
+    return Math.pow(1 + FACTOR * elapsed / s, DECAY);
   }
 
-  function intervalDays(step) {
-    return steps()[cap(step)];
+  function initDifficulty(g) {
+    return clampD(W[4] - Math.exp(W[5] * (g - 1)) + 1);
+  }
+
+  function recallStability(s, d, r, g) {
+    const bonus = g === 4 ? W[16] : 1;
+    return s * (1 + Math.exp(W[8]) * (11 - d) * Math.pow(s, -W[9]) *
+      (Math.exp(W[10] * (1 - r)) - 1) * bonus);
+  }
+
+  function forgetStability(s, d, r) {
+    return Math.min(
+      W[11] * Math.pow(d, -W[12]) * (Math.pow(s + 1, W[13]) - 1) *
+      Math.exp(W[14] * (1 - r)),
+      s);
   }
 
   function grade(state, g) {
-    const prev = state || { step: -1, reps: 0, lapses: 0 };
-    let step;
-    if (g === 1) {
-      step = 0;
-    } else if (g === 0) {
-      step = cap(Math.max(prev.step, 0));
-    } else {
-      step = cap(Math.max(prev.step, -1) + (g === 4 ? 2 : 1));
+    const prev = state ||
+      { ph: 'L', step: -1, s: 0, d: 0, reps: 0, lapses: 0 };
+    const reps = prev.reps + 1;
+    const lapses = prev.lapses + (g === 1 ? 1 : 0);
+
+    if (g === 0) {
+      const interval = prev.ph === 'F'
+        ? fsrsInterval(prev.s)
+        : ladder()[Math.max(prev.step, 0)];
+      return { ph: prev.ph || 'L', step: prev.step, s: prev.s,
+        d: prev.d, reps, lapses: prev.lapses, interval };
     }
-    return {
-      step,
-      reps: prev.reps + 1,
-      lapses: prev.lapses + (g === 1 ? 1 : 0),
-      interval: intervalDays(step)
-    };
+
+    if (prev.ph !== 'F') {
+      if (g === 1) {
+        return { ph: 'L', step: 0, s: 0, d: 0, reps, lapses,
+          interval: ladder()[0] };
+      }
+      const atTop = prev.step >= top();
+      if (!atTop) {
+        const step = Math.min(prev.step + (g === 4 ? 2 : 1), top());
+        return { ph: 'L', step, s: 0, d: 0, reps, lapses,
+          interval: ladder()[step] };
+      }
+      const held = ladder()[top()];
+      const d0 = clampD(initDifficulty(3) + 0.3 * prev.lapses);
+      const r = retrievability(held, held);
+      const s = recallStability(held, d0, r, g);
+      return { ph: 'F', step: top() + 1, s, d: d0, reps, lapses,
+        interval: fsrsInterval(s) };
+    }
+
+    const r = retrievability(fsrsInterval(prev.s), prev.s);
+    if (g === 1) {
+      const s = Math.max(0.5, forgetStability(prev.s, prev.d, r));
+      const d = clampD(prev.d + W[6] * 2);
+      return { ph: 'F', step: prev.step, s, d, reps, lapses,
+        interval: 1 };
+    }
+    const d = clampD(W[7] * initDifficulty(4) +
+      (1 - W[7]) * (prev.d - W[6] * (g - 3)));
+    const s = recallStability(prev.s, prev.d, r, g);
+    return { ph: 'F', step: prev.step, s, d, reps, lapses,
+      interval: fsrsInterval(s) };
   }
 
-  return { grade, intervalDays };
+  return { grade, fsrsInterval };
 })();
 </script>
 <script>
@@ -1131,9 +1163,11 @@ const Sched = (() => {
 // Code wire format (before compression), pipe-separated:
 //   S1|<stuId>|<genDate YYYY-MM-DD>|<requestId or ->|<entries>
 // entries: ';'-separated. Each entry is a ref, optionally with state:
-//   ref                       -> new word, no scheduler state
-//   ref,step,due,reps,lapses  -> seeded word (step = ladder rung,
-//                                due = day offset from genDate)
+//   ref                            -> new word, no scheduler state
+//   ref,step,due,reps,lapses       -> ladder-phase word (step = rung,
+//                                     due = day offset from genDate)
+//   ref,step,due,reps,lapses,s10,d10 -> graduated word (FSRS phase;
+//                                     s and d are x10 ints)
 // ref: 'i' + base36 index into MASTER, or 'w' + literal word.
 // The whole string is UTF-8 -> raw deflate -> base64url (no padding).
 // In links it rides as the URL fragment: <app-url>#C<encoded>
@@ -1185,10 +1219,14 @@ const Codec = (() => {
     if (f.length < 5) return { word, state: null };
     const due = new Date(genDate);
     due.setDate(due.getDate() + parseInt(f[2], 10));
+    const graduated = f.length >= 7;
     return {
       word,
       state: {
+        ph: graduated ? 'F' : 'L',
         step: parseInt(f[1], 10),
+        s: graduated ? parseInt(f[5], 10) / 10 : 0,
+        d: graduated ? parseInt(f[6], 10) / 10 : 0,
         due: due.toISOString().slice(0, 10),
         reps: parseInt(f[3], 10),
         lapses: parseInt(f[4], 10)
@@ -1288,7 +1326,8 @@ const App = (() => {
         seeded++;
       } else {
         db.deck[e.word] = {
-          step: -1, due: null, reps: 0, lapses: 0, added: today()
+          ph: 'L', step: -1, s: 0, d: 0, due: null,
+          reps: 0, lapses: 0, added: today()
         };
         added++;
       }
@@ -1339,7 +1378,10 @@ const App = (() => {
     const dueDate = new Date();
     dueDate.setDate(dueDate.getDate() + next.interval);
     db.deck[word] = Object.assign({}, st, {
+      ph: next.ph,
       step: next.step,
+      s: next.s,
+      d: next.d,
       reps: next.reps,
       lapses: next.lapses,
       due: dueDate.toISOString().slice(0, 10)
@@ -1553,7 +1595,10 @@ const App = (() => {
       exported: new Date().toISOString(),
       app: CONFIG.VERSION,
       words: Object.entries(db.deck).map(([w, st]) => ({
-        w, step: st.step, due: st.due, reps: st.reps, lapses: st.lapses
+        w, ph: st.ph || 'L', step: st.step,
+        s: Math.round((st.s || 0) * 10) / 10,
+        d: Math.round((st.d || 0) * 10) / 10,
+        due: st.due, reps: st.reps, lapses: st.lapses
       })),
       sessions: db.sessions.slice(-60)
     };
@@ -1608,24 +1653,7 @@ const App = (() => {
   // ---------- template printing ----------
 
   function printTemplates() {
-    const pages = 4;
-    let html = '';
-    for (let p = 0; p < pages; p++) {
-      html += '<div class="tpl-page"><div class="tpl-corner tl"></div>' +
-        '<div class="tpl-corner tr"></div>' +
-        '<div class="tpl-corner bl"></div>' +
-        '<div class="tpl-corner br"></div>' +
-        '<div class="tpl-head">Spelling practice &mdash; ' +
-        'name: ________________ &nbsp; date: ________</div>';
-      for (let i = 1; i <= CONFIG.PAGE_SIZE; i++) {
-        html += '<div class="tpl-row"><span class="tpl-num">' + i +
-          '</span><span class="tpl-line"></span>' +
-          '<span class="tpl-mark"></span></div>';
-      }
-      html += '</div>';
-    }
-    $('print-area').innerHTML = html;
-    window.print();
+    window.open('template.html?print=1', '_blank');
   }
 
   // ---------- import via paste ----------

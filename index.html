@@ -213,7 +213,7 @@ textarea {
 // NEVER reorder or delete entries. extract_words.py appends only.
 const CONFIG = {
   APP_NAME: 'Spelling Practice',
-  VERSION: '1.3.0',
+  VERSION: '1.4.0',
   TEACHER_NAME: 'Mr Sproule',
   TEACHER_EMAIL: 'tspr@tc.vic.edu.au',
   NEW_PER_DAY: 5,
@@ -1169,6 +1169,11 @@ const Sched = (() => {
 //   ref,step,due,reps,lapses,s10,d10 -> graduated word (FSRS phase;
 //                                     s and d are x10 ints)
 // ref: 'i' + base36 index into MASTER, or 'w' + literal word.
+// A leading '!' on the ref marks a TEACHER OVERRIDE: force-overwrite the
+// word's state even if the device already holds it (normal seeds are
+// skipped when the word exists - local state wins). Overrides are how
+// Tim corrects a word from his side; they are idempotent by genDate
+// (the app won't re-apply an override it has already seen).
 // The whole string is UTF-8 -> raw deflate -> base64url (no padding).
 // In links it rides as the URL fragment: <app-url>#C<encoded>
 const Codec = (() => {
@@ -1205,7 +1210,9 @@ const Codec = (() => {
 
   function parseEntry(raw, genDate) {
     const f = raw.split(',');
-    const ref = f[0];
+    let ref = f[0];
+    let force = false;
+    if (ref[0] === '!') { force = true; ref = ref.slice(1); }
     let word;
     if (ref[0] === 'i') {
       const row = MASTER[parseInt(ref.slice(1), 36)];
@@ -1216,12 +1223,13 @@ const Codec = (() => {
     } else {
       return null;
     }
-    if (f.length < 5) return { word, state: null };
+    if (f.length < 5) return { word, force, state: null };
     const due = new Date(genDate);
     due.setDate(due.getDate() + parseInt(f[2], 10));
     const graduated = f.length >= 7;
     return {
       word,
+      force,
       state: {
         ph: graduated ? 'F' : 'L',
         step: parseInt(f[1], 10),
@@ -1293,6 +1301,15 @@ const App = (() => {
     return new Date().toISOString().slice(0, 10);
   }
 
+  function loadSummary(res, withTotal) {
+    let s = 'Loaded: ' + res.added + ' new word' +
+      (res.added === 1 ? '' : 's');
+    if (res.seeded) s += ', ' + res.seeded + ' restored';
+    if (res.overridden) s += ', ' + res.overridden + ' updated';
+    return s + (withTotal
+      ? '. Deck now has ' + res.total + ' words.' : '.');
+  }
+
   let toastTimer = null;
 
   function setStatus(msg, isError) {
@@ -1318,9 +1335,23 @@ const App = (() => {
     }
     db.stu = code.stu;
     db.lastCodeDate = code.genDate;
-    let added = 0, seeded = 0;
+    let added = 0, seeded = 0, overridden = 0;
     for (const e of code.entries) {
-      if (db.deck[e.word]) continue; // local state wins - it is newer
+      const existing = db.deck[e.word];
+      if (e.force && e.state) {
+        // Teacher override: force-overwrite even when the word exists.
+        // Idempotent by genDate - don't re-apply an override already
+        // seen, so a re-tapped old link can't wipe practice done since.
+        if (existing && existing.ovApplied &&
+            existing.ovApplied >= code.genDate) continue;
+        db.deck[e.word] = Object.assign(
+          { added: existing ? existing.added : code.genDate },
+          e.state, { ovApplied: code.genDate });
+        if (!existing) db.order.push(e.word);
+        overridden++;
+        continue;
+      }
+      if (existing) continue; // local state wins for ordinary seeds
       if (e.state) {
         db.deck[e.word] = Object.assign({ added: code.genDate }, e.state);
         seeded++;
@@ -1337,7 +1368,7 @@ const App = (() => {
       db.pendingReq = { id: code.req, requestedAt: today(), fulfilled: false };
     }
     save();
-    return { added, seeded, total: Object.keys(db.deck).length };
+    return { added, seeded, overridden, total: Object.keys(db.deck).length };
   }
 
   // ---------- session building ----------
@@ -1674,10 +1705,7 @@ const App = (() => {
       const res = await applyCode(raw);
       if (res) {
         box.value = '';
-        setStatus('Loaded: ' + res.added + ' new word' +
-          (res.added === 1 ? '' : 's') +
-          (res.seeded ? ', ' + res.seeded + ' restored' : '') +
-          '. Deck now has ' + res.total + ' words.');
+        setStatus(loadSummary(res, true));
         renderHome();
       }
     } catch (e) {
@@ -1736,11 +1764,7 @@ const App = (() => {
       history.replaceState(null, '', location.pathname + location.search);
       try {
         const res = await applyCode(hash.slice(2));
-        if (res) {
-          setStatus('Loaded: ' + res.added + ' new word' +
-            (res.added === 1 ? '' : 's') +
-            (res.seeded ? ', ' + res.seeded + ' restored' : '') + '.');
-        }
+        if (res) setStatus(loadSummary(res, false));
       } catch (e) {
         setStatus('This link’s code could not be read. ' +
           'You can paste it manually instead.', true);

@@ -213,11 +213,10 @@ textarea {
 // NEVER reorder or delete entries. extract_words.py appends only.
 const CONFIG = {
   APP_NAME: 'Spelling Practice',
-  VERSION: '1.4.0',
+  VERSION: '2.0.0',
   TEACHER_NAME: 'Mr Sproule',
   TEACHER_EMAIL: 'tspr@tc.vic.edu.au',
-  NEW_PER_DAY: 5,
-  MAX_DUE_PER_SESSION: 20,
+  DAILY_MAX: 10,
   PAGE_SIZE: 10,
   LADDER: [1, 2, 4, 7]
 };
@@ -1160,20 +1159,28 @@ const Sched = (() => {
 </script>
 <script>
 // Practice-code decode + report encode.
+//
+// A deck is a set of TARGETS, each scheduled by the spaced-repetition
+// algorithm. Three kinds:
+//   word  - a specific base word the student is getting wrong; always
+//           shown as that word (a pool of one).
+//   morph - a morphograph the student is struggling with (e.g. 'ful');
+//           shown via a ROTATING pool of words that contain it, so the
+//           morphograph is what's scheduled, not any one word.
+//   rule  - a spelling rule (e.g. 'doubling'); same rotating-pool idea.
+//
 // Code wire format (before compression), pipe-separated:
-//   S1|<stuId>|<genDate YYYY-MM-DD>|<requestId or ->|<entries>
-// entries: ';'-separated. Each entry is a ref, optionally with state:
-//   ref                            -> new word, no scheduler state
-//   ref,step,due,reps,lapses       -> ladder-phase word (step = rung,
-//                                     due = day offset from genDate)
-//   ref,step,due,reps,lapses,s10,d10 -> graduated word (FSRS phase;
-//                                     s and d are x10 ints)
-// ref: 'i' + base36 index into MASTER, or 'w' + literal word.
-// A leading '!' on the ref marks a TEACHER OVERRIDE: force-overwrite the
-// word's state even if the device already holds it (normal seeds are
-// skipped when the word exists - local state wins). Overrides are how
-// Tim corrects a word from his side; they are idempotent by genDate
-// (the app won't re-apply an override it has already seen).
+//   S2|<stuId>|<genDate YYYY-MM-DD>|<requestId or ->|<entries>
+// entries: ';'-separated. Each entry is one of:
+//   <ref>[,step,due,reps,lapses[,s10,d10]]   - WORD target (ref-first).
+//        ref = 'i'+base36 MASTER index or 'w'+literal. Optional state;
+//        a bare ref is a new word. A leading '!' on the ref is a teacher
+//        override (force-overwrite even if the device holds it).
+//   m:<label>:<poolRefs>[:<step,due,reps,lapses,ph,s10,d10,poolIdx>]
+//   r:<label>:<poolRefs>[:...]               - MORPH / RULE target.
+//        poolRefs = '.'-separated refs; state (if present) is comma-sep;
+//        a missing state section means a new target.
+//   due is a day offset from genDate; s/d are x10 ints; ph is 'L'/'F'.
 // The whole string is UTF-8 -> raw deflate -> base64url (no padding).
 // In links it rides as the URL fragment: <app-url>#C<encoded>
 const Codec = (() => {
@@ -1208,44 +1215,82 @@ const Codec = (() => {
     return new Uint8Array(buf);
   }
 
-  function parseEntry(raw, genDate) {
+  function refToWord(ref) {
+    if (!ref) return null;
+    if (ref[0] === 'i') {
+      const row = MASTER[parseInt(ref.slice(1), 36)];
+      return row ? row[0] : null;
+    }
+    if (ref[0] === 'w') return ref.slice(1).toLowerCase();
+    return null;
+  }
+
+  function dueFrom(genDate, offset) {
+    const d = new Date(genDate);
+    d.setDate(d.getDate() + parseInt(offset, 10));
+    return d.toISOString().slice(0, 10);
+  }
+
+  function parseTarget(raw, genDate) {
+    const kind = raw[0]; // 'm' or 'r'
+    const seg = raw.split(':');
+    const label = seg[1];
+    const pool = seg[2].split('.').map(refToWord).filter(Boolean);
+    const id = '@' + kind + ':' + label;
+    if (seg.length < 4 || !seg[3]) {
+      return { id, kind, label, pool, force: false, state: null };
+    }
+    const s = seg[3].split(',');
+    return {
+      id, kind, label, pool, force: false,
+      state: {
+        step: parseInt(s[0], 10),
+        due: dueFrom(genDate, s[1]),
+        reps: parseInt(s[2], 10),
+        lapses: parseInt(s[3], 10),
+        ph: s[4] || 'L',
+        s: (parseInt(s[5], 10) || 0) / 10,
+        d: (parseInt(s[6], 10) || 0) / 10,
+        poolIdx: parseInt(s[7], 10) || 0
+      }
+    };
+  }
+
+  function parseWord(raw, genDate) {
     const f = raw.split(',');
     let ref = f[0];
     let force = false;
     if (ref[0] === '!') { force = true; ref = ref.slice(1); }
-    let word;
-    if (ref[0] === 'i') {
-      const row = MASTER[parseInt(ref.slice(1), 36)];
-      if (!row) return null;
-      word = row[0];
-    } else if (ref[0] === 'w') {
-      word = ref.slice(1).toLowerCase();
-    } else {
-      return null;
-    }
-    if (f.length < 5) return { word, force, state: null };
-    const due = new Date(genDate);
-    due.setDate(due.getDate() + parseInt(f[2], 10));
+    const word = refToWord(ref);
+    if (!word) return null;
+    const base = { id: word, kind: 'w', label: word, pool: [word], force };
+    if (f.length < 5) return Object.assign(base, { state: null });
     const graduated = f.length >= 7;
-    return {
-      word,
-      force,
+    return Object.assign(base, {
       state: {
         ph: graduated ? 'F' : 'L',
         step: parseInt(f[1], 10),
         s: graduated ? parseInt(f[5], 10) / 10 : 0,
         d: graduated ? parseInt(f[6], 10) / 10 : 0,
-        due: due.toISOString().slice(0, 10),
+        due: dueFrom(genDate, f[2]),
         reps: parseInt(f[3], 10),
-        lapses: parseInt(f[4], 10)
+        lapses: parseInt(f[4], 10),
+        poolIdx: 0
       }
-    };
+    });
+  }
+
+  function parseEntry(raw, genDate) {
+    if ((raw[0] === 'm' || raw[0] === 'r') && raw[1] === ':') {
+      return parseTarget(raw, genDate);
+    }
+    return parseWord(raw, genDate);
   }
 
   async function decode(encoded) {
     const text = await inflate(b64uToBytes(encoded.trim()));
     const parts = text.split('|');
-    if (parts[0] !== 'S1' || parts.length !== 5) {
+    if (parts[0] !== 'S2' || parts.length !== 5) {
       throw new Error('Unrecognised code format');
     }
     const [, stu, genDate, req, entryStr] = parts;
@@ -1264,8 +1309,18 @@ const Codec = (() => {
 </script>
 <script>
 // Session flow, persistence, code import, reporting, template printing.
+//
+// The deck is a set of TARGETS (db.items), each scheduled by the
+// spaced-repetition algorithm. A target is one of:
+//   word  - shown always as that word (pool of one).
+//   morph - a morphograph; shown via a rotating pool of words containing
+//           it, so the MORPHOGRAPH is scheduled, not any one word.
+//   rule  - a spelling rule; same rotating-pool idea.
+// item = {kind,label,pool,poolIdx, ph,step,s,d,due,reps,lapses,added}.
+// The word shown for a target is pool[poolIdx % pool.length]; poolIdx
+// advances on each grade, so the next exposure uses a different word.
 const App = (() => {
-  const STORE_KEY = 'spelling-app-v1';
+  const STORE_KEY = 'spelling-app-v2';
 
   let db = null;
   let session = null;
@@ -1275,10 +1330,10 @@ const App = (() => {
   function blankDb() {
     return {
       stu: null,
-      deck: {},          // word -> {s,d,due,reps,lapses,added,seenToday}
-      order: [],         // insertion order, drives new-card sequence
+      items: {},         // id -> target
+      order: [],         // insertion order, drives new-target sequence
       sessions: [],
-      pendingReq: null,  // {id, requestedAt, fulfilled:bool}
+      pendingReq: null,
       doneReqs: [],
       lastCodeDate: null
     };
@@ -1301,13 +1356,16 @@ const App = (() => {
     return new Date().toISOString().slice(0, 10);
   }
 
+  function currentWord(item) {
+    return item.pool[(item.poolIdx || 0) % item.pool.length];
+  }
+
   function loadSummary(res, withTotal) {
-    let s = 'Loaded: ' + res.added + ' new word' +
-      (res.added === 1 ? '' : 's');
+    let s = 'Loaded: ' + res.added + ' new';
     if (res.seeded) s += ', ' + res.seeded + ' restored';
     if (res.overridden) s += ', ' + res.overridden + ' updated';
     return s + (withTotal
-      ? '. Deck now has ' + res.total + ' words.' : '.');
+      ? '. Deck now has ' + res.total + ' to practise.' : '.');
   }
 
   let toastTimer = null;
@@ -1321,8 +1379,15 @@ const App = (() => {
     toastTimer = setTimeout(() => t.classList.add('hidden'), 6000);
   }
 
-
   // ---------- code import ----------
+
+  function newItem(e, added) {
+    return {
+      kind: e.kind, label: e.label, pool: e.pool, poolIdx: 0,
+      ph: 'L', step: -1, s: 0, d: 0, due: null,
+      reps: 0, lapses: 0, added
+    };
+  }
 
   async function applyCode(encoded) {
     const code = await Codec.decode(encoded);
@@ -1337,60 +1402,60 @@ const App = (() => {
     db.lastCodeDate = code.genDate;
     let added = 0, seeded = 0, overridden = 0;
     for (const e of code.entries) {
-      const existing = db.deck[e.word];
+      const existing = db.items[e.id];
       if (e.force && e.state) {
-        // Teacher override: force-overwrite even when the word exists.
-        // Idempotent by genDate - don't re-apply an override already
-        // seen, so a re-tapped old link can't wipe practice done since.
+        // Teacher override: force-overwrite, idempotent by genDate.
         if (existing && existing.ovApplied &&
             existing.ovApplied >= code.genDate) continue;
-        db.deck[e.word] = Object.assign(
-          { added: existing ? existing.added : code.genDate },
+        db.items[e.id] = Object.assign(
+          { kind: e.kind, label: e.label, pool: e.pool, poolIdx: 0,
+            added: existing ? existing.added : code.genDate },
           e.state, { ovApplied: code.genDate });
-        if (!existing) db.order.push(e.word);
+        if (!existing) db.order.push(e.id);
         overridden++;
         continue;
       }
-      if (existing) continue; // local state wins for ordinary seeds
+      if (existing) {
+        // Local scheduler state wins, but refresh the rotating pool so a
+        // morph/rule target gets fresh vehicle words over cycles.
+        if (e.pool && e.pool.length) existing.pool = e.pool;
+        continue;
+      }
       if (e.state) {
-        db.deck[e.word] = Object.assign({ added: code.genDate }, e.state);
+        db.items[e.id] = Object.assign(newItem(e, code.genDate), e.state);
         seeded++;
       } else {
-        db.deck[e.word] = {
-          ph: 'L', step: -1, s: 0, d: 0, due: null,
-          reps: 0, lapses: 0, added: today()
-        };
+        db.items[e.id] = newItem(e, today());
         added++;
       }
-      db.order.push(e.word);
+      db.order.push(e.id);
     }
     if (code.req && !db.doneReqs.includes(code.req)) {
       db.pendingReq = { id: code.req, requestedAt: today(), fulfilled: false };
     }
     save();
-    return { added, seeded, overridden, total: Object.keys(db.deck).length };
+    return { added, seeded, overridden, total: Object.keys(db.items).length };
   }
 
   // ---------- session building ----------
 
-  // A session is pages of up to PAGE_SIZE words. Each page runs three
-  // phases in order: dictate (student writes all words, no answers),
-  // photo (pre-mark photo of the page, before anything is revealed),
-  // check (answers shown one by one, student grades each).
+  // One session per day, capped at DAILY_MAX targets: reviews that are
+  // due first (oldest first), then new targets to fill. Each target is
+  // rendered as its current pool word, captured now so dictate and check
+  // show the same word within the session.
   function buildSession() {
     const t = today();
-    const due = Object.entries(db.deck)
-      .filter(([, st]) => st.reps > 0 && st.due && st.due <= t)
+    const due = Object.entries(db.items)
+      .filter(([, it]) => it.reps > 0 && it.due && it.due <= t)
       .sort((a, b) => a[1].due.localeCompare(b[1].due))
-      .slice(0, CONFIG.MAX_DUE_PER_SESSION)
-      .map(([w]) => w);
-    const fresh = db.order
-      .filter(w => db.deck[w] && db.deck[w].reps === 0)
-      .slice(0, CONFIG.NEW_PER_DAY);
-    const words = due.concat(fresh);
-    if (!words.length) return null;
+      .map(([id]) => id);
+    const fresh = db.order.filter(
+      id => db.items[id] && db.items[id].reps === 0);
+    const ids = due.concat(fresh).slice(0, CONFIG.DAILY_MAX);
+    if (!ids.length) return null;
+    const items = ids.map(id => ({ id, word: currentWord(db.items[id]) }));
     return {
-      words, page: 0, di: 0, ci: 0,
+      items, page: 0, di: 0, ci: 0,
       fixup: [], results: {}, times: {},
       start: Date.now(), wordShownAt: null,
       counts: { again: 0, good: 0, easy: 0 },
@@ -1398,24 +1463,21 @@ const App = (() => {
     };
   }
 
-  function pageWords() {
+  function pageItems() {
     const from = session.page * CONFIG.PAGE_SIZE;
-    return session.words.slice(from, from + CONFIG.PAGE_SIZE);
+    return session.items.slice(from, from + CONFIG.PAGE_SIZE);
   }
 
-  function gradeWord(word, grade) {
-    const st = db.deck[word];
-    const next = Sched.grade(st, grade);
+  function gradeItem(id, grade) {
+    const it = db.items[id];
+    const next = Sched.grade(it, grade);
     const dueDate = new Date();
     dueDate.setDate(dueDate.getDate() + next.interval);
-    db.deck[word] = Object.assign({}, st, {
-      ph: next.ph,
-      step: next.step,
-      s: next.s,
-      d: next.d,
-      reps: next.reps,
-      lapses: next.lapses,
-      due: dueDate.toISOString().slice(0, 10)
+    db.items[id] = Object.assign({}, it, {
+      ph: next.ph, step: next.step, s: next.s, d: next.d,
+      reps: next.reps, lapses: next.lapses,
+      due: dueDate.toISOString().slice(0, 10),
+      poolIdx: ((it.poolIdx || 0) + 1) % it.pool.length
     });
     save();
   }
@@ -1445,8 +1507,6 @@ const App = (() => {
     } catch (e) { /* no speech support - visual flow still works */ }
   }
 
-  // Check/fix-up phases: say the word, spell it letter by letter, say
-  // it again - matching the tutoring app's correction behaviour.
   function speakSpelled(word) {
     try {
       speechSynthesis.cancel();
@@ -1472,21 +1532,21 @@ const App = (() => {
   function renderHome() {
     if (!db.stu) { show('scr-welcome'); return; }
     const t = today();
-    const dueN = Object.values(db.deck)
-      .filter(st => st.reps > 0 && st.due && st.due <= t).length;
-    const freshN = Object.values(db.deck).filter(st => st.reps === 0).length;
-    $('home-due').textContent = dueN;
-    $('home-new').textContent = Math.min(freshN, CONFIG.NEW_PER_DAY);
-    $('home-total').textContent = Object.keys(db.deck).length;
+    const dueN = Object.values(db.items)
+      .filter(it => it.reps > 0 && it.due && it.due <= t).length;
+    const freshN = Object.values(db.items).filter(it => it.reps === 0).length;
+    $('home-due').textContent = Math.min(dueN, CONFIG.DAILY_MAX);
+    $('home-new').textContent = Math.min(freshN,
+      Math.max(0, CONFIG.DAILY_MAX - dueN));
+    $('home-total').textContent = Object.keys(db.items).length;
     $('btn-start').disabled = dueN + freshN === 0;
     renderBanner();
     show('scr-home');
   }
 
   function renderBanner() {
-    const b = $('req-banner');
     const pending = db.pendingReq && !db.pendingReq.fulfilled;
-    b.classList.toggle('hidden', !pending);
+    $('req-banner').classList.toggle('hidden', !pending);
   }
 
   function startSession() {
@@ -1496,10 +1556,10 @@ const App = (() => {
   }
 
   function showDictate() {
-    const word = pageWords()[session.di];
+    const word = pageItems()[session.di].word;
     const overall = session.page * CONFIG.PAGE_SIZE + session.di + 1;
     $('dict-count').textContent =
-      'Word ' + overall + ' of ' + session.words.length;
+      'Word ' + overall + ' of ' + session.items.length;
     $('dict-box').textContent = 'Box ' + (session.di + 1);
     session.wordShownAt = Date.now();
     show('scr-dictate');
@@ -1507,11 +1567,11 @@ const App = (() => {
   }
 
   function dictateNext() {
-    const word = pageWords()[session.di];
-    session.times[word] =
+    const it = pageItems()[session.di];
+    session.times[it.id] =
       Math.round((Date.now() - session.wordShownAt) / 1000);
     session.di++;
-    if (session.di >= pageWords().length) {
+    if (session.di >= pageItems().length) {
       showPhoto();
     } else {
       showDictate();
@@ -1534,10 +1594,10 @@ const App = (() => {
   }
 
   function showCheck() {
-    const word = pageWords()[session.ci];
+    const word = pageItems()[session.ci].word;
     const overall = session.page * CONFIG.PAGE_SIZE + session.ci + 1;
     $('check-count').textContent =
-      'Word ' + overall + ' of ' + session.words.length;
+      'Word ' + overall + ' of ' + session.items.length;
     $('check-box').textContent = 'Box ' + (session.ci + 1);
     $('word-reveal').textContent = word;
     show('scr-check');
@@ -1545,20 +1605,20 @@ const App = (() => {
   }
 
   function grade(g) {
-    const word = pageWords()[session.ci];
-    session.results[word] = g;
+    const it = pageItems()[session.ci];
+    session.results[it.id] = g;
     session.counts[g === 1 ? 'again' : g === 3 ? 'good' : 'easy']++;
-    gradeWord(word, g);
-    if (g === 1) session.fixup.push(word);
+    gradeItem(it.id, g);
+    if (g === 1) session.fixup.push(it.word);
     session.ci++;
-    if (session.ci < pageWords().length) {
+    if (session.ci < pageItems().length) {
       showCheck();
       return;
     }
     session.page++;
     session.di = 0;
     session.ci = 0;
-    if (session.page * CONFIG.PAGE_SIZE < session.words.length) {
+    if (session.page * CONFIG.PAGE_SIZE < session.items.length) {
       showDictate();
     } else if (session.fixup.length) {
       startFixup();
@@ -1593,9 +1653,8 @@ const App = (() => {
     const secs = Math.round((Date.now() - session.start) / 1000);
     const times = Object.values(session.times).sort((a, b) => a - b);
     db.sessions.push({
-      d: today(),
-      secs,
-      done: session.words.length,
+      d: today(), secs,
+      done: session.items.length,
       again: session.counts.again,
       good: session.counts.good,
       easy: session.counts.easy,
@@ -1605,12 +1664,11 @@ const App = (() => {
     });
     if (db.sessions.length > 200) db.sessions = db.sessions.slice(-200);
     save();
-    $('sum-done').textContent = session.words.length;
+    $('sum-done').textContent = session.items.length;
     $('sum-right').textContent = session.counts.good + session.counts.easy;
     $('sum-wrong').textContent = session.counts.again;
     renderBanner();
-    const b = $('req-banner-end');
-    b.classList.toggle('hidden',
+    $('req-banner-end').classList.toggle('hidden',
       !(db.pendingReq && !db.pendingReq.fulfilled));
     session = null;
     show('scr-summary');
@@ -1620,16 +1678,18 @@ const App = (() => {
 
   function buildReport() {
     return {
-      v: 1,
+      v: 2,
       stu: db.stu,
       req: db.pendingReq ? db.pendingReq.id : null,
       exported: new Date().toISOString(),
       app: CONFIG.VERSION,
-      words: Object.entries(db.deck).map(([w, st]) => ({
-        w, ph: st.ph || 'L', step: st.step,
-        s: Math.round((st.s || 0) * 10) / 10,
-        d: Math.round((st.d || 0) * 10) / 10,
-        due: st.due, reps: st.reps, lapses: st.lapses
+      items: Object.entries(db.items).map(([id, it]) => ({
+        id, kind: it.kind, label: it.label,
+        ph: it.ph || 'L', step: it.step,
+        s: Math.round((it.s || 0) * 10) / 10,
+        d: Math.round((it.d || 0) * 10) / 10,
+        due: it.due, reps: it.reps, lapses: it.lapses,
+        poolIdx: it.poolIdx || 0
       })),
       sessions: db.sessions.slice(-60)
     };
@@ -1639,7 +1699,7 @@ const App = (() => {
     const report = buildReport();
     const summary =
       'Spelling practice report - ' + db.stu + '\n' +
-      'Words in deck: ' + report.words.length + '\n' +
+      'Targets in deck: ' + report.items.length + '\n' +
       'Sessions on record: ' + report.sessions.length + '\n' +
       (db.pendingReq ? 'Request: ' + db.pendingReq.id + '\n' : '') +
       'Exported: ' + report.exported.slice(0, 10) + '\n\n';
@@ -1693,10 +1753,6 @@ const App = (() => {
     const box = [$('code-input'), $('code-input2')]
       .find(el => el && el.value.trim());
     if (!box) return;
-    // Accept a full link, a "#C..." fragment, or a bare code. Codes are
-    // base64url, so whitespace from email line-wrapping is stripped.
-    // Never strip a bare leading "C" - codes can legitimately start
-    // with one; only the "#C" marker is a prefix.
     let raw = box.value.replace(/\s+/g, '');
     const marker = raw.lastIndexOf('#C');
     if (marker !== -1) raw = raw.slice(marker + 2);
@@ -1732,9 +1788,9 @@ const App = (() => {
     $('btn-good').onclick = () => grade(3);
     $('btn-easy').onclick = () => grade(4);
     $('btn-speak').onclick = () =>
-      session && speak(pageWords()[session.di]);
+      session && speak(pageItems()[session.di].word);
     $('btn-check-speak').onclick = () =>
-      session && speakSpelled(pageWords()[session.ci]);
+      session && speakSpelled(pageItems()[session.ci].word);
     $('btn-fix-speak').onclick = () =>
       session && speakSpelled(session.fixup[fixupIdx]);
     $('btn-fix-done').onclick = fixupDone;

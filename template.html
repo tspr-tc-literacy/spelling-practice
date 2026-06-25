@@ -79,7 +79,8 @@ html, body { margin: 0; padding: 0; background: #fff; }
 // TEMPLATE_VERSION 2 — per-letter cells (was: one ruled box per word, v1).
 // ROWS words per page; COLS letter-cells per word. The crop geometry the
 // OCR pipeline uses is derived from these + the fixed margins above.
-var ROWS = 10, COLS = 14;
+var ROWS = 10, COLS = 15;  // 15 covers the longest word in the STM corpus
+                            // ('thoughtlessness'); pools max at 12 letters.
 (function () {
   var sheet = document.querySelector('.sheet');
   var foot = sheet.querySelector('.foot');

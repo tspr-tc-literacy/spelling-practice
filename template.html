@@ -17,9 +17,12 @@ html, body { margin: 0; padding: 0; background: #fff; }
 }
 .sheet {
   position: relative; width: 210mm; height: 296mm; margin: 0 auto;
-  font-family: Arial, sans-serif; box-sizing: border-box;
-  background: #fff;
+  font-family: Arial, sans-serif; box-sizing: border-box; background: #fff;
 }
+/* Corner fiducials: 3 solid + 1 hollow (bottom-right) for orientation.
+   The OCR pipeline finds these four high-contrast marks, deskews the
+   page, then crops the letter-cells by their fixed geometry. Do not
+   move them without bumping TEMPLATE_VERSION + the crop geometry. */
 .fid { position: absolute; width: 10mm; height: 10mm; background: #000; }
 .fid.tl { top: 6mm; left: 6mm; }
 .fid.tr { top: 6mm; right: 6mm; }
@@ -28,40 +31,33 @@ html, body { margin: 0; padding: 0; background: #fff; }
   bottom: 6mm; right: 6mm; background: none;
   border: 2.6mm solid #000; box-sizing: border-box;
 }
-.head {
-  position: absolute; top: 17.5mm; left: 12mm; right: 12mm;
-}
+.head { position: absolute; top: 17mm; left: 14mm; right: 14mm; }
 .head h1 { font-size: 13pt; margin: 0; display: inline-block; }
 .meta { float: right; }
 .meta label {
-  font-size: 7.5pt; color: #666; display: inline-block;
-  margin-left: 5mm; vertical-align: top;
+  font-size: 7.5pt; color: #666; display: inline-block; margin-left: 5mm;
+  vertical-align: top;
 }
 .meta .box {
-  display: block; border: 0.35mm solid #888; height: 7mm;
-  margin-top: 1mm; border-radius: 1mm;
+  display: block; border: 0.35mm solid #888; height: 7mm; margin-top: 1mm;
+  border-radius: 1mm;
 }
 .meta .date { width: 26mm; }
-.meta .page { width: 12mm; }
-.row { position: absolute; left: 12mm; right: 12mm; height: 17mm; }
+.row { position: absolute; left: 14mm; right: 12mm; height: 14mm; }
 .num {
-  position: absolute; left: 0; top: 0; width: 12mm; height: 17mm;
-  border: 0.45mm solid #000; border-radius: 1.2mm;
-  font-size: 15pt; font-weight: bold; text-align: center;
-  line-height: 17mm; box-sizing: border-box;
+  position: absolute; left: 0; top: 0; width: 8mm; height: 14mm;
+  font-size: 12pt; font-weight: bold; text-align: center; line-height: 14mm;
 }
-.write {
-  position: absolute; left: 16mm; right: 0; top: 0; height: 17mm;
-  border: 0.45mm solid #000; border-radius: 1.2mm;
-  box-sizing: border-box;
+.cells { position: absolute; left: 11mm; right: 0; top: 0; height: 14mm;
+  display: flex; gap: 0; }
+.cell {
+  flex: 1 1 0; height: 12mm; border: 0.4mm solid #000;
+  border-radius: 1mm; box-sizing: border-box; margin-right: 1mm;
 }
-.write::after {
-  content: ''; position: absolute; left: 3mm; right: 3mm;
-  bottom: 4.5mm; border-bottom: 0.4mm dotted #b9b9b9;
-}
+.cell:last-child { margin-right: 0; }
 .foot {
-  position: absolute; top: 253mm; left: 0; right: 0;
-  text-align: center; font-size: 8.5pt; color: #888;
+  position: absolute; top: 256mm; left: 0; right: 0; text-align: center;
+  font-size: 8.5pt; color: #888;
 }
 @media print { .toolbar { display: none; } }
 </style>
@@ -75,21 +71,26 @@ html, body { margin: 0; padding: 0; background: #fff; }
     <h1>TC: Spelling App</h1>
     <span class="meta">
       <label>Date<span class="box date"></span></label>
-      <label>Page<span class="box page"></span></label>
     </span>
   </div>
-  <div class="foot">Dark pen &middot; big letters &middot; one word per box</div>
+  <div class="foot">One letter per box &middot; dark pen &middot; print clearly</div>
 </div>
 <script>
+// TEMPLATE_VERSION 2 — per-letter cells (was: one ruled box per word, v1).
+// ROWS words per page; COLS letter-cells per word. The crop geometry the
+// OCR pipeline uses is derived from these + the fixed margins above.
+var ROWS = 10, COLS = 14;
 (function () {
   var sheet = document.querySelector('.sheet');
   var foot = sheet.querySelector('.foot');
-  for (var i = 0; i < 10; i++) {
+  for (var r = 0; r < ROWS; r++) {
     var row = document.createElement('div');
     row.className = 'row';
-    row.style.top = (30 + i * 22.3) + 'mm';
-    row.innerHTML = '<span class="num">' + (i + 1) +
-      '</span><span class="write"></span>';
+    row.style.top = (30 + r * 22) + 'mm';
+    var cells = '';
+    for (var c = 0; c < COLS; c++) cells += '<span class="cell"></span>';
+    row.innerHTML = '<span class="num">' + (r + 1) + '</span>' +
+      '<span class="cells">' + cells + '</span>';
     sheet.insertBefore(row, foot);
   }
   if (location.search.indexOf('print') !== -1) {

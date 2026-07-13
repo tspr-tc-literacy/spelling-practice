@@ -213,7 +213,7 @@ textarea {
 // NEVER reorder or delete entries. extract_words.py appends only.
 const CONFIG = {
   APP_NAME: 'Spelling Practice',
-  VERSION: '2.1.1',
+  VERSION: '2.2.0',
   TEACHER_NAME: 'Mr Sproule',
   TEACHER_EMAIL: 'tspr@tc.vic.edu.au',
   DAILY_MAX: 10,
@@ -1308,6 +1308,753 @@ const Codec = (() => {
 })();
 </script>
 <script>
+// geometry.js — TEMPLATE_VERSION 2 canonical geometry (per-letter cells).
+//
+// Canonical space = the A4 sheet rendered at SCALE px/mm. It mirrors the
+// fixed layout in template.html (ROWS=10, COLS=15, the CSS margins). The
+// OCR pipeline detects the 4 corner fiducials in a photo, solves the
+// perspective map from this canonical space to the photo, then crops each
+// cell rect. Keep these numbers in lockstep with template.html — if the
+// printed layout changes, bump TEMPLATE_VERSION and update both.
+const Geometry = (() => {
+  const TEMPLATE_VERSION = 2;
+  const SCALE = 5;                                  // px per mm
+  const PAGE = { w: 210 * SCALE, h: 296 * SCALE };  // 1050 x 1480
+  const ROWS = 10, COLS = 15;
+
+  // Fiducial CENTRES (template.html: 10mm squares at 6mm insets → centre at
+  // inset + 5mm). br is the HOLLOW marker = orientation key.
+  const FIDUCIALS = {
+    tl: [11 * SCALE, 11 * SCALE],
+    tr: [199 * SCALE, 11 * SCALE],
+    bl: [11 * SCALE, 285 * SCALE],
+    br: [199 * SCALE, 285 * SCALE]   // hollow
+  };
+  const FIDUCIAL_ORDER = ['tl', 'tr', 'bl', 'br'];
+  function fiducialPoints() { return FIDUCIAL_ORDER.map(k => FIDUCIALS[k]); }
+
+  // Cell grid (template.html: cells span 25mm..198mm, 15/row, 1mm gaps →
+  // 10.6mm wide; row r top = 30 + r*22 mm; cell 12mm tall).
+  const CELL = { x0: 25, pitch: 11.6, w: 10.6, h: 12, rowTop0: 30, rowPitch: 22 };
+
+  function cellRect(r, c) {
+    const x = (CELL.x0 + c * CELL.pitch) * SCALE;
+    const y = (CELL.rowTop0 + r * CELL.rowPitch) * SCALE;
+    const w = CELL.w * SCALE, h = CELL.h * SCALE;
+    return {
+      r, c, x, y, w, h,
+      corners: [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
+    };
+  }
+
+  function allCells() {
+    const out = [];
+    for (let r = 0; r < ROWS; r++)
+      for (let c = 0; c < COLS; c++) out.push(cellRect(r, c));
+    return out;
+  }
+
+  // The cells for one word row (row index = the box number on the sheet - 1).
+  function rowCells(r) {
+    const out = [];
+    for (let c = 0; c < COLS; c++) out.push(cellRect(r, c));
+    return out;
+  }
+
+  return {
+    TEMPLATE_VERSION, SCALE, PAGE, ROWS, COLS,
+    FIDUCIALS, FIDUCIAL_ORDER, fiducialPoints,
+    cellRect, allCells, rowCells
+  };
+})();
+</script>
+<script>
+// vision-core.js — pure image-processing for the Phase 2 OCR pipeline.
+//
+// No canvas / DOM here, so it's unit-testable in Node. The browser wrapper
+// (vision.js) pulls pixels off a canvas and calls these; the actual letter
+// recognition is a separate, swappable module. Functions operate on plain
+// typed arrays: grayscale is a Uint8 of length w*h; binary is a Uint8 where
+// 1 = ink (dark), 0 = background.
+const Vision = (() => {
+
+  // ---- grayscale + threshold ----
+
+  function rgbaToGray(rgba, w, h) {
+    const g = new Uint8Array(w * h);
+    for (let i = 0, p = 0; i < w * h; i++, p += 4) {
+      // luma; ignore alpha
+      g[i] = (rgba[p] * 0.299 + rgba[p + 1] * 0.587 + rgba[p + 2] * 0.114) | 0;
+    }
+    return g;
+  }
+
+  // Otsu's method — the threshold that best separates ink from paper.
+  function otsu(gray) {
+    const hist = new Array(256).fill(0);
+    for (let i = 0; i < gray.length; i++) hist[gray[i]]++;
+    const total = gray.length;
+    let sum = 0;
+    for (let t = 0; t < 256; t++) sum += t * hist[t];
+    let sumB = 0, wB = 0, best = 0, thresh = 127;
+    for (let t = 0; t < 256; t++) {
+      wB += hist[t];
+      if (wB === 0) continue;
+      const wF = total - wB;
+      if (wF === 0) break;
+      sumB += t * hist[t];
+      const mB = sumB / wB, mF = (sum - sumB) / wF;
+      const between = wB * wF * (mB - mF) * (mB - mF);
+      if (between > best) { best = between; thresh = t; }
+    }
+    return thresh;
+  }
+
+  // ink (dark) = 1. Pixels at/below threshold are ink.
+  function binarize(gray, thresh) {
+    const b = new Uint8Array(gray.length);
+    for (let i = 0; i < gray.length; i++) b[i] = gray[i] <= thresh ? 1 : 0;
+    return b;
+  }
+
+  // ---- connected components (4-connected flood fill) ----
+
+  function connectedComponents(binary, w, h, minArea) {
+    const labels = new Int32Array(w * h);
+    const qx = new Int32Array(w * h), qy = new Int32Array(w * h);
+    const comps = [];
+    let label = 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const idx = y * w + x;
+        if (!binary[idx] || labels[idx]) continue;
+        label++;
+        let head = 0, tail = 0;
+        qx[tail] = x; qy[tail] = y; tail++; labels[idx] = label;
+        let area = 0, sx = 0, sy = 0;
+        let minx = x, maxx = x, miny = y, maxy = y;
+        while (head < tail) {
+          const cx = qx[head], cy = qy[head]; head++;
+          area++; sx += cx; sy += cy;
+          if (cx < minx) minx = cx; if (cx > maxx) maxx = cx;
+          if (cy < miny) miny = cy; if (cy > maxy) maxy = cy;
+          if (cx + 1 < w) { const n = cy * w + cx + 1; if (binary[n] && !labels[n]) { labels[n] = label; qx[tail] = cx + 1; qy[tail] = cy; tail++; } }
+          if (cx - 1 >= 0) { const n = cy * w + cx - 1; if (binary[n] && !labels[n]) { labels[n] = label; qx[tail] = cx - 1; qy[tail] = cy; tail++; } }
+          if (cy + 1 < h) { const n = (cy + 1) * w + cx; if (binary[n] && !labels[n]) { labels[n] = label; qx[tail] = cx; qy[tail] = cy + 1; tail++; } }
+          if (cy - 1 >= 0) { const n = (cy - 1) * w + cx; if (binary[n] && !labels[n]) { labels[n] = label; qx[tail] = cx; qy[tail] = cy - 1; tail++; } }
+        }
+        const bw = maxx - minx + 1, bh = maxy - miny + 1;
+        if (area >= (minArea || 1)) {
+          comps.push({
+            label, area, cx: sx / area, cy: sy / area,
+            minx, miny, maxx, maxy, bw, bh,
+            fill: area / (bw * bh),
+            aspect: bw / bh
+          });
+        }
+      }
+    }
+    return comps;
+  }
+
+  // ---- fiducial detection ----
+
+  // Find the 4 corner markers. Strategy: keep near-square, reasonably large
+  // components, take the one nearest each image corner, and confirm the
+  // bottom-right one is the HOLLOW marker (low fill ratio) so we know the
+  // page is the right way up. Returns {tl,tr,bl,br,hollowOk} (centroids) or
+  // null if 4 plausible markers weren't found.
+  function findFiducials(comps, w, h, opts) {
+    opts = opts || {};
+    const minArea = opts.minArea || Math.round(w * h * 0.0002); // ~0.02% of frame
+    const aspectTol = opts.aspectTol || 0.55;                   // bw/bh in [1-t, 1/(1-t)]
+    const cand = comps.filter(c =>
+      c.area >= minArea &&
+      c.aspect >= (1 - aspectTol) && c.aspect <= 1 / (1 - aspectTol));
+    if (cand.length < 4) return null;
+
+    const corners = { tl: [0, 0], tr: [w, 0], bl: [0, h], br: [w, h] };
+    const picked = {};
+    const used = new Set();
+    for (const key of ['tl', 'tr', 'bl', 'br']) {
+      const [cxw, cyw] = corners[key];
+      let best = null, bestD = Infinity;
+      for (const c of cand) {
+        if (used.has(c.label)) continue;
+        const d = (c.cx - cxw) ** 2 + (c.cy - cyw) ** 2;
+        if (d < bestD) { bestD = d; best = c; }
+      }
+      if (!best) return null;
+      used.add(best.label);
+      picked[key] = best;
+    }
+
+    // Orientation check: the br marker is the HOLLOW one, so among the four
+    // it should be the clear outlier-low on fill ratio. We use a relative
+    // test (a distinct gap between the emptiest marker and the next) rather
+    // than an absolute cutoff — the printed ring's thickness, and photo blur,
+    // both shift the absolute fill, but the hollow stays visibly the emptiest.
+    // If the page is rotated, the emptiest marker won't be at bottom-right
+    // and this fails, flagging a retake.
+    const fills = ['tl', 'tr', 'bl', 'br'].map(k => picked[k].fill);
+    const sorted = [...fills].sort((a, b) => a - b);
+    const minFill = sorted[0];
+    const separation = sorted[1] - sorted[0];
+    const hollowOk = picked.br.fill === minFill && separation >= (opts.hollowGap || 0.12);
+
+    return {
+      tl: [picked.tl.cx, picked.tl.cy],
+      tr: [picked.tr.cx, picked.tr.cy],
+      bl: [picked.bl.cx, picked.bl.cy],
+      br: [picked.br.cx, picked.br.cy],
+      hollowOk,
+      marks: picked
+    };
+  }
+
+  // ---- homography (4-point DLT) ----
+
+  // Solve A x = b by Gaussian elimination with partial pivoting.
+  function solveLinear(A, b) {
+    const n = b.length;
+    // augment
+    const M = A.map((row, i) => row.concat(b[i]));
+    for (let col = 0; col < n; col++) {
+      let piv = col;
+      for (let r = col + 1; r < n; r++)
+        if (Math.abs(M[r][col]) > Math.abs(M[piv][col])) piv = r;
+      if (Math.abs(M[piv][col]) < 1e-12) return null; // singular
+      [M[col], M[piv]] = [M[piv], M[col]];
+      for (let r = 0; r < n; r++) {
+        if (r === col) continue;
+        const f = M[r][col] / M[col][col];
+        for (let k = col; k <= n; k++) M[r][k] -= f * M[col][k];
+      }
+    }
+    return M.map((row, i) => row[n] / row[i]);
+  }
+
+  // Homography mapping src[4] -> dst[4]. Returns length-9 array (h8 = 1).
+  function solveHomography(src, dst) {
+    const A = [], b = [];
+    for (let i = 0; i < 4; i++) {
+      const [x, y] = src[i], [u, v] = dst[i];
+      A.push([x, y, 1, 0, 0, 0, -x * u, -y * u]); b.push(u);
+      A.push([0, 0, 0, x, y, 1, -x * v, -y * v]); b.push(v);
+    }
+    const h = solveLinear(A, b);
+    return h ? h.concat(1) : null;
+  }
+
+  function applyHomography(H, pt) {
+    const [x, y] = pt;
+    const d = H[6] * x + H[7] * y + H[8];
+    return [(H[0] * x + H[1] * y + H[2]) / d, (H[3] * x + H[4] * y + H[5]) / d];
+  }
+
+  return {
+    rgbaToGray, otsu, binarize, connectedComponents, findFiducials,
+    solveLinear, solveHomography, applyHomography
+  };
+})();
+</script>
+<script>
+// vision.js — pipeline wrapper: photo -> per-letter-box crops.
+//
+// The maths lives in vision-core.js (pure) and geometry.js (the sheet
+// layout). Here we (a) run the detection + perspective solve on a photo's
+// pixels, and (b) cut each cell out as a small straightened image. The
+// crop + ink-measure helpers are pure (they take {data,width,height}, the
+// same shape as a canvas ImageData) so they're unit-tested in Node; the
+// canvas plumbing at the bottom is browser-only.
+const VisionApp = (() => {
+
+  // Bilinear sample of an RGBA buffer at fractional (px,py). Out-of-frame
+  // reads return white (paper) so crops never pick up black border junk.
+  function sampleRGBA(src, px, py) {
+    const w = src.width, h = src.height, d = src.data;
+    if (px < 0 || py < 0 || px > w - 1 || py > h - 1) return [255, 255, 255];
+    const x0 = Math.floor(px), y0 = Math.floor(py);
+    const x1 = Math.min(x0 + 1, w - 1), y1 = Math.min(y0 + 1, h - 1);
+    const fx = px - x0, fy = py - y0;
+    const out = [0, 0, 0];
+    for (let c = 0; c < 3; c++) {
+      const a = d[(y0 * w + x0) * 4 + c], b = d[(y0 * w + x1) * 4 + c];
+      const e = d[(y1 * w + x0) * 4 + c], f = d[(y1 * w + x1) * 4 + c];
+      const top = a + (b - a) * fx, bot = e + (f - e) * fx;
+      out[c] = top + (bot - top) * fy;
+    }
+    return out;
+  }
+
+  // Cut one cell out of the photo into an outW x outH upright RGBA image.
+  // Hc2p maps canonical (sheet) coords -> photo pixels. We walk the output
+  // grid, map each pixel back to the photo, and sample. `inset` trims the
+  // printed box border (fraction of cell size) so we keep the letter, not
+  // the lines around it.
+  function cropCell(src, Hc2p, cell, outW, outH, inset) {
+    inset = inset == null ? 0.12 : inset;
+    const ix = cell.w * inset, iy = cell.h * inset;
+    const x0 = cell.x + ix, y0 = cell.y + iy;
+    const cw = cell.w - 2 * ix, ch = cell.h - 2 * iy;
+    const data = new Uint8ClampedArray(outW * outH * 4);
+    for (let oy = 0; oy < outH; oy++) {
+      for (let ox = 0; ox < outW; ox++) {
+        const canonX = x0 + ((ox + 0.5) / outW) * cw;
+        const canonY = y0 + ((oy + 0.5) / outH) * ch;
+        const p = Vision.applyHomography(Hc2p, [canonX, canonY]);
+        const [r, g, b] = sampleRGBA(src, p[0], p[1]);
+        const i = (oy * outW + ox) * 4;
+        data[i] = r; data[i + 1] = g; data[i + 2] = b; data[i + 3] = 255;
+      }
+    }
+    return { data, width: outW, height: outH };
+  }
+
+  // Fraction of a crop that is ink (dark). Threshold via the crop's own
+  // Otsu unless one is passed. A blank box returns ~0; a written letter a
+  // few-percent-and-up. Used to tell "empty" from "has something" and as a
+  // cheap feature downstream.
+  function inkRatio(img, thresh) {
+    const gray = Vision.rgbaToGray(img.data, img.width, img.height);
+    const t = thresh == null ? Vision.otsu(gray) : thresh;
+    let ink = 0;
+    for (let i = 0; i < gray.length; i++) if (gray[i] <= t) ink++;
+    return ink / gray.length;
+  }
+
+  // Run detection + perspective solve on a photo (ImageData-shaped).
+  // Returns {ok, reason?, Hc2p, fids, threshold}.
+  function runPipeline(image) {
+    const w = image.width, h = image.height;
+    const gray = Vision.rgbaToGray(image.data, w, h);
+    const t = Vision.otsu(gray);
+    const bin = Vision.binarize(gray, t);
+    const comps = Vision.connectedComponents(bin, w, h);
+    const fids = Vision.findFiducials(comps, w, h);
+    if (!fids) return { ok: false, reason: 'no-fiducials' };
+    if (!fids.hollowOk) return { ok: false, reason: 'orientation' };
+    const Hc2p = Vision.solveHomography(
+      Geometry.fiducialPoints(), [fids.tl, fids.tr, fids.bl, fids.br]);
+    if (!Hc2p) return { ok: false, reason: 'homography' };
+    return { ok: true, Hc2p, fids, threshold: t };
+  }
+
+  // Crop a set of cells. `cells` defaults to all 150; pass a subset (e.g.
+  // only the rows actually carrying a word) to save work. Returns
+  // [{r,c,crop,ink}].
+  function extractCells(image, Hc2p, opts) {
+    opts = opts || {};
+    const outW = opts.outW || 32, outH = opts.outH || 40;
+    const cells = opts.cells || Geometry.allCells();
+    return cells.map(cell => {
+      const crop = cropCell(image, Hc2p, cell, outW, outH, opts.inset);
+      return { r: cell.r, c: cell.c, crop, ink: inkRatio(crop) };
+    });
+  }
+
+  // ---- browser-only plumbing (uses canvas / DOM) ----
+
+  // <img>/<canvas>/ImageBitmap -> ImageData via an offscreen canvas,
+  // downscaled so the long edge is <= maxEdge (keeps detection fast on
+  // multi-megapixel phone photos). Returns null outside a browser.
+  function toImageData(source, maxEdge) {
+    if (typeof document === 'undefined') return null;
+    maxEdge = maxEdge || 1600;
+    const sw = source.naturalWidth || source.width;
+    const sh = source.naturalHeight || source.height;
+    const scale = Math.min(1, maxEdge / Math.max(sw, sh));
+    const w = Math.round(sw * scale), h = Math.round(sh * scale);
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    const ctx = cv.getContext('2d');
+    ctx.drawImage(source, 0, 0, w, h);
+    return ctx.getImageData(0, 0, w, h);
+  }
+
+  // ImageData-shaped crop -> data URL (for the review screen / debugging).
+  function cropToDataURL(crop) {
+    if (typeof document === 'undefined') return null;
+    const cv = document.createElement('canvas');
+    cv.width = crop.width; cv.height = crop.height;
+    const ctx = cv.getContext('2d');
+    const id = ctx.createImageData(crop.width, crop.height);
+    id.data.set(crop.data);
+    ctx.putImageData(id, 0, 0);
+    return cv.toDataURL('image/png');
+  }
+
+  return {
+    cropCell, inkRatio, runPipeline, extractCells,
+    sampleRGBA, toImageData, cropToDataURL
+  };
+})();
+</script>
+<script>
+// recognise.js — isolated single-letter recogniser for the OCR audit.
+//
+// Each letter is written in its own printed box, so this is single-character
+// recognition, not cursive line OCR. We turn a cell crop into an aspect-
+// preserving NxN ink-density "shape signature", then score it (cosine) against
+// reference letterforms held in a model {N, letters:{a:[vec,...], ...}}.
+//
+// The recogniser is deliberately a baseline + SWAPPABLE: a better engine
+// (small CNN, Tesseract) can replace classify() without touching the pipeline
+// or the four-gate matcher. Confidence is reported as a top-1-vs-top-2 margin
+// so the matcher can stay conservative (only flag when clearly wrong).
+//
+// Pure functions (operate on {data,width,height} crops); Node-testable.
+const Recognise = (() => {
+
+  // Crop -> {grid:Float32Array(N*N), N, inkFrac, blank, bbox}.
+  // Binarize (Otsu within the crop), find the ink bounding box, and resample
+  // it into an NxN density grid, preserving aspect and centring (so 'l' stays
+  // a thin column and 'o' stays a ring rather than both becoming blocks).
+  function normalizeCrop(crop, opts) {
+    opts = opts || {};
+    const N = opts.N || 12;
+    const minInk = opts.minInk == null ? 0.015 : opts.minInk;
+    const w = crop.width, h = crop.height;
+    const gray = Vision.rgbaToGray(crop.data, w, h);
+    const t = Vision.otsu(gray);
+    const mask = new Uint8Array(w * h);
+    let minx = w, miny = h, maxx = -1, maxy = -1, ink = 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (gray[y * w + x] <= t) {
+          mask[y * w + x] = 1; ink++;
+          if (x < minx) minx = x; if (x > maxx) maxx = x;
+          if (y < miny) miny = y; if (y > maxy) maxy = y;
+        }
+      }
+    }
+    const inkFrac = ink / (w * h);
+    const grid = new Float32Array(N * N);
+    if (maxx < minx || inkFrac < minInk) {
+      return { grid, N, inkFrac, blank: true, bbox: null };
+    }
+    const bw = maxx - minx + 1, bh = maxy - miny + 1;
+    let tw, th;
+    if (bw >= bh) { tw = N; th = Math.max(1, Math.round(N * bh / bw)); }
+    else { th = N; tw = Math.max(1, Math.round(N * bw / bh)); }
+    const ox = Math.floor((N - tw) / 2), oy = Math.floor((N - th) / 2);
+    for (let i = 0; i < th; i++) {
+      for (let j = 0; j < tw; j++) {
+        const xs0 = Math.floor(j * bw / tw), xs1 = Math.max(xs0 + 1, Math.floor((j + 1) * bw / tw));
+        const ys0 = Math.floor(i * bh / th), ys1 = Math.max(ys0 + 1, Math.floor((i + 1) * bh / th));
+        let s = 0, cnt = 0;
+        for (let yy = ys0; yy < ys1 && yy < bh; yy++) {
+          for (let xx = xs0; xx < xs1 && xx < bw; xx++) {
+            s += mask[(miny + yy) * w + (minx + xx)]; cnt++;
+          }
+        }
+        grid[(oy + i) * N + (ox + j)] = cnt ? s / cnt : 0;
+      }
+    }
+    return { grid, N, inkFrac, blank: false, bbox: { x: minx, y: miny, w: bw, h: bh } };
+  }
+
+  // L2-normalize the density grid -> unit feature vector (cosine-ready).
+  function featureVector(norm) {
+    const g = norm.grid;
+    let mag = 0;
+    for (let i = 0; i < g.length; i++) mag += g[i] * g[i];
+    mag = Math.sqrt(mag) || 1;
+    const v = new Float32Array(g.length);
+    for (let i = 0; i < g.length; i++) v[i] = g[i] / mag;
+    return v;
+  }
+
+  function dot(a, b) {
+    let s = 0;
+    const n = Math.min(a.length, b.length);
+    for (let i = 0; i < n; i++) s += a[i] * b[i];
+    return s;
+  }
+
+  // Score a feature vector against the model. Returns ranked letters with
+  // best cosine each, the top letter, and a confidence margin (top1 - top2).
+  function classify(vec, model) {
+    const scores = {};
+    for (const letter in model.letters) {
+      let best = -Infinity;
+      for (const proto of model.letters[letter]) {
+        const c = dot(vec, proto);
+        if (c > best) best = c;
+      }
+      scores[letter] = best;
+    }
+    const ranked = Object.keys(scores).sort((a, b) => scores[b] - scores[a]);
+    const top = ranked[0] || null;
+    const best = top ? scores[top] : 0;
+    const second = ranked[1] ? scores[ranked[1]] : 0;
+    return { top, best, margin: best - second, scores, ranked };
+  }
+
+  // Full recognise: crop + model -> verdict. Blank boxes short-circuit to
+  // {letter:null, blank:true} so the matcher treats "nothing written" apart
+  // from a wrong letter.
+  function recognise(crop, model, opts) {
+    const norm = normalizeCrop(crop, { N: model.N, minInk: opts && opts.minInk });
+    if (norm.blank) return { letter: null, blank: true, inkFrac: norm.inkFrac, conf: 0, scores: {} };
+    const vec = featureVector(norm);
+    const cls = classify(vec, model);
+    return {
+      letter: cls.top, blank: false, inkFrac: norm.inkFrac,
+      conf: cls.margin, topScore: cls.best, scores: cls.scores, ranked: cls.ranked, vec
+    };
+  }
+
+  // Decode a baked model (glyph-prototypes.js): base64 Uint8 -> Float32 vecs
+  // (byte/255), each re-normalized to unit length so cosine == dot. Works in
+  // the browser (atob) and Node (Buffer).
+  function b64ToBytes(b64) {
+    if (typeof atob === 'function') {
+      const bin = atob(b64);
+      const out = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      return out;
+    }
+    return new Uint8Array(Buffer.from(b64, 'base64'));
+  }
+
+  function loadModel(packed) {
+    const N = packed.N, len = N * N;
+    const letters = {};
+    for (const ch in packed.letters) {
+      const bytes = b64ToBytes(packed.letters[ch]);
+      const k = Math.floor(bytes.length / len);
+      const vecs = [];
+      for (let v = 0; v < k; v++) {
+        const arr = new Float32Array(len);
+        let mag = 0;
+        for (let i = 0; i < len; i++) { const f = bytes[v * len + i] / 255; arr[i] = f; mag += f * f; }
+        mag = Math.sqrt(mag) || 1;
+        for (let i = 0; i < len; i++) arr[i] /= mag;
+        vecs.push(arr);
+      }
+      letters[ch] = vecs;
+    }
+    return { N, letters, version: packed.version };
+  }
+
+  return { normalizeCrop, featureVector, classify, recognise, dot, loadModel };
+})();
+</script>
+<script>
+// glyph-prototypes.js - baked reference letterforms for the OCR recogniser.
+// Generated 2026-06-25 from rendered fonts (handwriting-weighted) via the
+// _rec-test harness. Each letter holds K base64-packed Uint8 vectors of N*N
+// bytes (= Recognise.featureVector * 255). Decoded + re-normalized at load by
+// Recognise.loadModel(). Cold-start only; per-student profile personalises on top.
+const GLYPH_PROTOTYPES = {
+  version: '1',
+  generated: '2026-06-25',
+  N: 16,
+  fonts: ["Ink Free", "Segoe Print", "Segoe Script", "Comic Sans MS", "Gabriola", "Verdana", "Georgia", "Tahoma"],
+  letters: {
+    'a': 'AAAAAAAAAAAAABwcHBwAAAAAAAAAAAAAAAAcHBwcAAAAAAAAAAAAHBwcHAAAHAAAAAAAAAAAHBwcAAAAABwAAAAAAAAAABwAAAAAAAAcAAAAAAAAABwAAAAAAAAAHBwAAAAAABwcAAAAAAAAHBwcAAAAABwcAAAAAAAAHBwcHAAAAAAcAAAAAAAAABwAHBwAAAAAHAAAAAAAAAAcABwcAAAAHBwAAAAAAAAcHAAcHAAAABwAAAAAAAAcHAAAHBwAHBwcAAAAABwcHAAAABwcABwcHAAAABwcHAAAAAAcHAAcHBwAHBwcAAAAAAAAHBwAHBwcHBwcAAAAAAAAAAAcAAAAAAAAAAAAABkZGQAAAAAAAAAAAAAAGRkZGRkZAAAAAAAAAAAAGRkZGRkZGRkAAAAAAAAAGRkZGQAAGRkZDAAAAAAAGRkZGQAAAAAZGQAAAAAAGRkZGQAAAAAAGRkAAAAAABkZGQAAAAAAGRkZAAAAABkZGQAAAAAAABkZGQAAAAAZGRkAAAAAAAAZGRkAAAAZGRkAAAAAAAAZGRkZAAAAGRkZAAAAAAAZGRkZGQAAABkZAAAAAAAZGRkZGRkAAAAZGQAAAAAZGRkAGRkZAAAAGRkAAAAZGRkAABkZGQAAABkZGRkZGRkAAAAAGRkMAAAMGRkZDAwAAAAAAAwZEgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB4eHh4AAAAAAAAAAAAAAB4eHh4eAAAAAAAAAAAAAB4eHgAeHh4AAAAAAAAAAB4eHgAAHh4eAAAAAAAAAB4eHgAAAB4eHgAAAAAAAA8eHgAAAAAeHgAAAAAAAAAeHgAAAAAPHh4AAAAAAAAeHh4AAAAAHh4eAAAAAAAAHh4eAAAAAB4eHgAAAAAAAB4eAAAAAB4PHh4eAAAAAB4eHh4AAB4eAAAeHgAAAB4PDx4eHg8PAAAADx4eHh4PAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFhYWFhYWAAAAAAAAAAAAABYWFhYWFgAAAAAAAAAAABYWFhYWFhYWFgAAAAAAFhYWFhYWFhYWFhYAAAAAFhYWFhYAAAAAFhYWAAAAABYWFhYAAAAAABYWFgAAFhYWFhYAAAAAAAAWFhYAABYWFhYAAAAAAAAAFhYWAAAWFhYWAAAAAAAAABYWFgAAFhYWFgAAAAAAAAAWFhYAABYWFhYAAAAAAAAAFhYWAAAWFhYWFgAAAAAAABYWFgAAAAAWFhYWAAAAABYWFhYAAAAAFhYWFhYWFhYWFhYWFgAAAAAWFhYWFhYWFgAWFhYAAAAAABYWFhYWAAAAABYWAAAAAAAAGhoaGhoaGgAAAAAAAAAAABoaGhoaGhoAAAAAAAAAGhoAAAAAGhoaAAAAAAAAGhoaAAAAAAAAGhoaAAAAABoaGgAAAAAAABoaGgAAAAAAGhoAAAAAAAAaGhoAAAAAAAAAAAAAGhoaGgAAAAAAAAAAAAAAABoaGhoAAAAAAAAAGhoaAAAAAAAaAAAAAAAAGhoaAAAAABoaGgAAAAAAABoaGgAAAAAaGhoAAAAAGhoaAAAAAAAaGhoaAAAAAAAAGhoaGhoaGgAAGhoaAAAAABoaGhoaGhoAABoaGgAAAAAaGhoaAAAAAAAaGhoaGgAAAAAAAAAAAAAAAAAAAAAAAAAAGRkZGRkZGRkAAAAAAAAAGRkZGRkZGRkZGQwAAAAAABkZGRkZGRkZGRkZAAAAAAAZGQAAAAAAABkZGQAAAAAAAAAAAAAAAAAAGRkAAAAAAAAAAAAAAAAAAAAZAAAAAAAAAAAAGRkZGRkZGQAAAAAAABkZGRkZGRkZGRkAAAAAABkZGRkZGRkZGRkZAAAAABkZGRkZAAAAAAAAGQAAAAAZGRkAAAAAAAAAABkAAAAAGRkAAAAAAAAAAAAZAAAAABkZAAAAAAAAAAAAGQAAAAAZGRkAAAAAAAAZGRkAAAAAGRkZGRkZGRkZGRkZAAAAAAAMDBkZGRkZDAwAGQAAAAAAAAAZGRkZGRkAAAAAAAAAAAAAGRkZGRkZAAAAAAAAAAAZGRkAAAAZGRkAAAAAAAAAGRkAAAAAABkZGQAAAAAZGRkZGQAAAAAZGRkAAAAAAAAZGQAAAAAAGRkZAAAAAAAAAAAAAAAAABkZGQAAAAAAAAAAAAAAABkZGRkAAAAAAAAAAAAZGRkAGRkZAAAAAAAAGRkZGQAAABkZGQAAAAAZGRkZAAAAAAAZGRkAAAAAGRkZGQAAAAAAGRkZAAAAABkZGRkAAAAAABkZGQAAAAAZGRkZAAAAABkZGRkAAAAAGRkZGRkAABkAGRkZAAAAAAAAGRkZGRkAAAAZGRkZAAAAAAAXFxcXFxcXAAAAAAAAABcXFxcXFxcXFxcXAAAAAAAXFxcXFwAAFxcXFxcAAAAAABcAAAAAAAAAFxcXAAAAAAAAAAAAAAAAABcXFwAAAAAAAAAAAAAAAAAXFxcAAAAAAAAAABcXFxcXFxcXAAAAAAAXFxcXFxcXFxcXFwAAAAAXFxcXFxcAAAAXFxcAAAAAFxcXAAAAAAAAFxcXAAAAFxcXAAAAAAAAABcXFwAAABcXFwAAAAAAAAAXFxcAAAAXFxcXAAAAAAAXFxcXAAAAABcXFxcXFxcXFxcXFwAAAAAXFxcXFxcXFxcXFxcAAAAAAAAXFxcXFwAAFxcXAAA=',
+    'b': 'AAAAKAAAAAAAAAAAAAAAAAAAACgoAAAAAAAAAAAAAAAAAAAoKAAAAAAAAAAAAAAAAAAAKCgAAAAAAAAAAAAAAAAAACgoAAAAAAAAAAAAAAAAAAAoKAAAAAAAAAAAAAAAAAAAKCgAAAAAFCgUAAAAAAAAACgoAAAKKBQUKAAAAAAAAAAoKAAAKAAAACgAAAAAAAAAACgAKBQAAAAoAAAAAAAAAAAoCigAAAAUFAAAAAAAAAAAKBQAAAAAKAAAAAAAAAAAACgoAAAAFCgAAAAAAAAAAAAoFAAAFB4AAAAAAAAAAAAAKBQAKCgAAAAAAAAAAAAAABQUKBQAAAAAAAAAAAAAAAAAEyYAAAAAAAAAAAAAAAAAABwmEwAAAAAAAAAAAAAAAAAmJgAAAAAAAAAAAAAAAAAAJiYAAAAAAAAAAAAAAAAACSYAAAAAAAAAAAAAAAAAABMmAAAAAAAAAAAAAAAAAAATHAAAEyYmEwAAAAAAAAAAExMAHCYTHCYAAAAAAAAAACYTJiYAABMmAAAAAAAAAAAmHCYJAAATJgAAAAAAAAAAJiYmAAAAExMAAAAAAAAAACYcAAAAACYTAAAAAAAAACYmCQAACSYmAAAAAAAAAAAmJgAAACYmEwAAAAAAAAAAACYTExwmEwAAAAAAAAAAAAAcJiYcCQAAAAAAAAAAAAAAAAAAFhYAAAAAAAAAAAAAAAAAACAgAAAAAAAAAAAAAAAAAAArFgAAAAAAAAAAAAAAAAAWKwsAAAAAAAAAAAAAAAAAKysAAAAAAAAAAAAAAAAACysWAAAAAAAAAAAAAAAAABYrFgAAAAAAAAAAAAAAAAAWKwAAFisrAAAAAAAAAAAAICsLIBYAKwAAAAAAAAAAACsAKwAAACsAAAAAAAAAAAArKwsAAAArAAAAAAAAAAAAKysAAAAWFgAAAAAAAAAAKysAAAAAKwsAAAAAAAAAACsWAAAAKxYAAAAAAAAAAAArCwAWKxYAAAAAAAAAAAAAACArIAsAAAAAAAAAAAAAACEAAAAAAAAAAAAAAAAAACEhAAAAAAAAAAAAAAAAAAAhIQAAAAAAAAAAAAAAAAAAISEAAAAAAAAAAAAAAAAAACEhAAAAAAAAAAAAAAAAAAAhIQAAAAAAAAAAAAAAAAAAISEAECEhIQAAAAAAAAAAACEhISEhISEhCAAAAAAAAAAhISEQAAAhIRAAAAAAAAAAISEAAAAAABAhAAAAAAAAACEhAAAAAAAAIQAAAAAAAAAhIQAAAAAAACEAAAAAAAAAISEAAAAAABAhAAAAAAAAACEhEAAAABAhGAAAAAAAAAAhISEhISEhIRAAAAAAAAAAECEhISEhIQgAAAAAAAAAAAAAACcUAAAAAAAAAAAAAAAAACcnAAAAAAAAAAAAAAAAAAAnJwAAAAAAAAAAAAAAAAAAJycAAAAAAAAAAAAAAAAAACcnAAAAAAAAAAAAAAAAAAAnJwAAAAAAAAAAAAAAAAAAJycAAAAAAAAAAAAAAAAAACcnAAAAAAAAAAAAAAAAAAAnJwAAJycUAAAAAAAAAAAAJwAAJycnJwAAAAAAAAAAACcAFAAAACcAAAAAAAAAAAAnJxQAAAAnAAAAAAAAAAAAJycAAAAAJwAAAAAAAAAAACcnAAAAACcAAAAAAAAAACcnAAAAACcUAAAAAAAAAAAnFBQUFBQUAAAAAAAAAAAfHwAAAAAAAAAAAAAAAAAAHx8AAAAAAAAAAAAAAAAAAB8fAAAAAAAAAAAAAAAAAAAfHwAAAAAAAAAAAAAAAAAAHx8AAA8PDwgAAAAAAAAAAB8fAB8fHx8fHwAAAAAAAAAfHx8fDw8PHx8PAAAAAAAAHx8fAAAAAA8fDwAAAAAAAB8fAAAAAAAAHx8AAAAAAAAfHwAAAAAAAB8fAAAAAAAAHx8AAAAAAAAfHwAAAAAAAB8fAAAAAAAAHx8AAAAAAAAfHwAAAAAAAB8fAAAAAAAAHx8PAAAAABcfDwAAAAAAAB8fHx8fHx8fHwAAAAAAAAAfHw8XHx8fDwAAAAAAAAAlJSUlEwAAAAAAAAAAAAAAAAAlJRMAAAAAAAAAAAAAAAAAEyUTAAAAAAAAAAAAAAAAABMlEwAAAAAAAAAAAAAAAAATJRMAAAAAAAAAAAAAAAAAEyUTAAAAAAAAAAAAAAAAABMlHBMTJRwTAAAAAAAAAAATJRMAAAATJRMAAAAAAAAAEyUTAAAAEyUTAAAAAAAAABMlEwAAAAAlJQAAAAAAAAATJRMAAAAAJSUAAAAAAAAAEyUTAAAAACUlAAAAAAAAABMlEwAAAAAlJQAAAAAAAAATJRMAAAAJJRwAAAAAAAAAEyUlAAAAEyUTAAAAAAAAABMTEyUTJRwAAAAAAAAAAB8fDwAAAAAAAAAAAAAAAAAfHw8AAAAAAAAAAAAAAAAAHx8PAAAAAAAAAAAAAAAAAB8fDwAAAAAAAAAAAAAAAAAfHw8AAAAAAAAAAAAAAAAAHx8PAB8fHw8AAAAAAAAAAB8fHx8fHx8fHwAAAAAAAAAfHx8AAAAAHx8PAAAAAAAAHx8PAAAAAA8fDwAAAAAAAB8fDwAAAAAIHxcAAAAAAAAfHw8AAAAAAB8fAAAAAAAAHx8PAAAAAAAfFwAAAAAAAB8fDwAAAAAPHw8AAAAAAAAfHw8AAAAAFx8IAAAAAAAAHx8fHwAfHx8fAAAAAAAAAB8fFx8fHx8PAAAAAAA=',
+    'c': 'AAAAAAAAAAAlJSUAAAAAAAAAAAAAAAAAJSUlAAAAAAAAAAAAAAAAJSUAACUAAAAAAAAAAAAAJSUAAAAlAAAAAAAAAAAAACUlAAAAAAAAAAAAAAAAACUlAAAAAAAAAAAAAAAAAAAlJQAAAAAAAAAAAAAAAAAlJQAAAAAAAAAAAAAAAAAAJSUAAAAAAAAAAAAAAAAAACUAAAAAAAAAJQAAAAAAJSUlAAAAAAAAACUAAAAAACUlJQAAAAAAACUAAAAAAAAlJSUAAAAAACUAAAAAAAAAJSUlAAAAACUAAAAAAAAAAAAAJSUAJSUAAAAAAAAAAAAAACUlJSUAAAAAAAAAAAAAAAAAAAAAAB8fHwAAAAAAAAAAAAAAHx8fHx8QAAAAAAAAAAAAHx8fHx8fEAAAAAAAAAAAAB8fHwAAHxAAAAAAAAAAAB8fHwAAAB8QAAAAAAAAAB8fHwAAAAAAEAAAAAAAAAAfHwAAAAAAAAAAAAAAAAAfHxAAAAAAAAAAAAAAAAAfHx8AAAAAAAAAAAAAAAAAHx8fAAAAAAAAAAAAAAAAAB8fAAAAAAAAAAAAAAAAAAAfHwAAAAAAAAAAEAAAAAAAHx8AAAAAAAAAHx8AAAAAAB8fHwAAAAAfHx8QAAAAAAAfHx8fHx8fHx8fAAAAAAAAABAfHx8fHxAQAAAAAAAAAAAAAAAdHR0AAAAAAAAAAAAAAAAAHR0dAAAAAAAAAAAAAAAAHR0dHR0AAAAAAAAAAAAAHR0dHR0dAAAAAAAAAAAAHR0dAAAdHQAAAAAAAAAAAB0dAAAAHR0AAAAAAAAAAB0dAAAAAAAdAAAAAAAAAAAdHQAAAAAAAAAAAAAAAB0dHR0AAAAAAAAAAAAAAAAdHR0AAAAAAAAAAAAAAAAAHR0dAAAAAAAAAAAAAAAdHR0dHQAAAAAAAAAAAAAdHQAdHR0AAAAAAAAAAB0dHQAAHR0dHQAAAAAAHR0dHQAAAAAAHR0dHR0dHR0dAAAAAAAAAAAdHR0dHQAAAAAAAAAAAAAAAAAAABoaGhoaAAAAAAAAAAAAAAAaGhoaGgAAAAAAAAAAABoaGhoaGhoaGgAAAAAAABoaGhoaGhoaGhoAAAAAAAAaGhoAAAAAABoaAAAAAAAaGhoAAAAAAAAAAAAAAAAAGhoaAAAAAAAAAAAAAAAaGhoaAAAAAAAAAAAAAAAAGhoaGgAAAAAAAAAAAAAAABoaGhoAAAAAAAAAAAAAAAAaGhoaAAAAAAAAAAAAAAAAGhoaGgAAAAAAAAAaGgAAABoaGhoaAAAAAAAaGhoaAAAAABoaGhoaGhoaGhoaAAAAAAAAGhoaGhoaGhoaAAAAAAAAAAAAGhoaGhoAAAAAAAAAAAAAAB0dHR0dHR0dAAAAAAAAAAAdHR0dHR0dHQAAAAAAAAAdAAAAAAAdHR0AAAAAAAAAHQAAAAAAHR0dAAAAAAAdHR0AAAAAAAAAHQAAAAAAHR0AAAAAAAAAAAAAAAAAAB0dAAAAAAAAAAAAAAAAHR0dHQAAAAAAAAAAAAAAAB0dHR0AAAAAAAAAAAAAAAAdHR0dAAAAAAAAAAAAAAAAHR0dHQAAAAAAAAAAAAAAAB0dHR0AAAAAAAAAAAAAAAAdHR0dHQAAAAAAAAAAAAAAAAAdHR0dHQAAAAAAHQAAAAAAHR0dHR0AAAAAAB0AAAAAAAAAHR0dHR0dAAAAAAAAAAAAAAAAHR0dHR0dAAAAAAAAAAAdHR0dHR0dHR0AAAAAAAAdHR0dHR0dHR0dAAAAAAAdHR0dAAAAAAAAHQAAAAAAHR0dAAAAAAAAAAAAAAAAHR0dAAAAAAAAAAAAAAAAAB0dHQAAAAAAAAAAAAAAAAAdHR0AAAAAAAAAAAAAAAAAHR0dAAAAAAAAAAAAAAAAAB0dHQAAAAAAAAAAAAAAAAAdHR0AAAAAAAAAAAAAAAAAHR0dAAAAAAAAAAAAAAAAAAAdHR0AAAAAAAAAAAAAAAAAHR0dHQAAAAAAAB0AAAAAAAAdHR0dHR0dHR0dAAAAAAAAAA4OHR0dHR0dDgAAAAAAAAAAAB0dHR0dAAAAAAAAAAAAAAAdHR0dHQAAAAAAAAAAAB0dHQAAHR0dAAAAAAAAAB0dHQAAAAAdHR0AAAAAAB0dHQAAAAAAHR0dAAAAAAAdHR0AAAAAAB0dHQAAAAAAHR0dAAAAAAAdHR0AAAAdHR0dHQAAAAAAAAAAAAAAHR0dHQAAAAAAAAAAAAAAAB0dHR0dAAAAAAAAAAAAAAAAAB0dHQAAAAAAAAAAAAAAAAAdHR0AAAAAAAAAAAAAAAAAHR0dAAAAAAAAAAAdAAAAAAAdHR0AAAAAAAAdAAAAAAAAAB0dHR0AAB0dAAAAAAAAAAAAHR0dHR0dAAAAAAAAAAAAABwcHBwcHBwAAAAAAAAAABwcHBwcHBwcHAAAAAAAABwcHBwcABwcHBwAAAAAABwcHAAAAAAAAAAcAAAAABwcHBwAAAAAAAAAAAAAAAAcHBwAAAAAAAAAAAAAAAAAHBwcAAAAAAAAAAAAAAAAABwcHAAAAAAAAAAAAAAAAAAcHBwAAAAAAAAAAAAAAAAAHBwcAAAAAAAAAAAAAAAAABwcHAAAAAAAAAAAAAAAAAAcHBwcAAAAAAAAAAAAAAAAABwcHAAAAAAAAAAcAAAAAAAcHBwcHAAAABwcHAAAAAAAAAAcHBwcHBwcHBwAAAAAAAAAABwcHBwcHAAAAAA=',
+    'd': 'AAAAAAAAAAAAAAAbAAAAAAAAAAAAAAAAAAAAGwAAAAAAAAAAAAAAAAAAABsAAAAAAAAAAAAAAAAAAAAbAAAAAAAAAAAAAAAAAAAAGwAAAAAAAAAAAAAAAAAAABsAAAAAAAAAAAAAAA4bNhsbAAAAAAAAAAAAAAA2AAAAGwAAAAAAAAAAAAAAGwAANhsAAAAAAAAAAAAONgAAADYbAAAAAAAAAAAAGwAAABsAGwAAAAAAAAAAACkAAAApABsAAAAAAAAAADYbAAAAGwAbAAAAAAAAAAA2DgAANg4ANgAAAAAAAAAANhsAGzYAADYAAAAAAAAAABs2NikAAAApAAAAAAAAAAAAAAAAAAAAACQSAAAAAAAAAAAAAAAAAAkkEgAAAAAAAAAAAAAAAAASJBIAAAAAAAAAAAAAAAAAEiQJAAAAAAAAAAAAAAAAABIkAAAAAAAAAAAAAAAAAAAkEgAAAAAAAAAAAAAAAAAAJAAAAAAAAAAAAAkSJCQkEiQAAAAAAAAAABIkEgkAEiQbAAAAAAAAAAAkEgAAABIkEgAAAAAAAAAbJAAAAAAbJBIAAAAAAAAAJAAAAAAAJCQSAAAAAAAAEiQAAAAJJCQkEgAAAAAAACQkAAAAJCQSJBIAAAAAAAAkJBIbJBsACSQbEiQAAAAAABskGxIAAAAkJCQJAAAAAAAAAAAAAAAAICAAAAAAAAAAAAAAAAAAACAgAAAAAAAAAAAAAAAAAAAgGAAAAAAAAAAAAAAAAAAAIBAAAAAAAAAAAAAAAAAAACAQAAAAAAAAAAAAACAgIAAgEAAAAAAAAAAAGCAQICAQIAgAAAAAAAAAICAAAAAgICAAAAAAAAAAACAgAAAAICAgAAAAAAAAABggCAAAACAgIAAAAAAAAAAgIAAAAAAgICAAAAAAAAAQIAAAAAAQIBggAAAAAAAAIBAAAAAQIAAQIAAAAAAQICAQAAAQGAAACCAQAAAQGCAgEAAgIAAAAAAgEAAQIAAAICAgEAAAAAAAECAgGAAAAAAAAAAAAAAAAAAhEAAAAAAAAAAAAAAAAAAAISEAAAAAAAAAAAAAAAAAACEQAAAAAAAAAAAAAAAAAAghEAAAAAAAAAAAAAAAAAAQIRAAAAAAAAAAAAAAAAAAECEQAAAAAAAAAAAAISEhIRAhEAAAAAAAAAAIISEhISEhIRAAAAAAAAAAISEQAAAhISEQAAAAAAAAISEQAAAAABAhEAAAAAAAACEhAAAAAAAQIRAAAAAAAAAhIQAAAAAAECEQAAAAAAAAISEAAAAAABAhEAAAAAAAABAhIQgAABAZIRAAAAAAAAAAISEhISEhISEQAAAAAAAAAAgQISEhIRAhEAAAAAAAAAAAAAAAAAAmEwAAAAAAAAAAAAAAAAAAJhMAAAAAAAAAAAAAAAAAACYTAAAAAAAAAAAAAAAAAAAmEwAAAAAAAAAAAAAAAAAAJhMAAAAAAAAAAAAAAAAAACYTAAAAAAAAAAAAAAAAAAAmEwAAAAAAAAAAAAAAAAAAJgAAAAAAAAAAAAAAJiYmJiYAAAAAAAAAAAAAJiYAACYmAAAAAAAAAAAAJiYAAAAmJgAAAAAAAAAAJiYAAAAAJiYAAAAAAAAAACYmAAAAJiYmAAAAAAAAAAAmJgAAEwAmJgAAAAAAAAAAJiYAACYAJiYAAAAAAAAAABMmJiYJABMmEwAAAAAAAAAAAAAAAAAAAB8fAAAAAAAAAAAAAAAAAAAfHwAAAAAAAAAAAAAAAAAAHx8AAAAAAAAAAAAAAAAAAB8fAAAAAAAAAAAACBAQEAgfHwAAAAAAAAAAHx8fHx8fHx8AAAAAAAAAEB8fEBAQFx8fAAAAAAAAAB8fEAAAAAAfHwAAAAAAAAAfHwAAAAAAHx8AAAAAAAAQHxAAAAAAAB8fAAAAAAAAHx8AAAAAAAAfHwAAAAAAAB8fAAAAAAAAHx8AAAAAAAAAHx8AAAAAAB8fAAAAAAAAAB8fCAAAABAfHwAAAAAAAAAQHx8fHx8fHx8AAAAAAAAAABAfHx8QCB8fAAAAAAAAAAAAAAAiIiIiAAAAAAAAAAAAAAAAACIiIgAAAAAAAAAAAAAAAAAAIiIAAAAAAAAAAAAAAAAAACIiAAAAAAAAAAAAAAAAAAAiIgAAAAAAAAAAAAAAAAAAIiIAAAAAAAAAAAkRGhEaESIiAAAAAAAAAAAiIgAAACIiIgAAAAAAAAAAIgAAAAAAIiIAAAAAAAAAIiIAAAAAACIiAAAAAAAAACIiAAAAAAAiIgAAAAAAABEiIgAAAAAAIiIAAAAAAAAAIiIAAAAAACIiAAAAAAAAACIiAAAAAAAiIgAAAAAAAAAAIiIAAAAAIiIAAAAAAAAAAAkRIhERESIiEQAAAAAAAAAAAAAAAAAAHx8AAAAAAAAAAAAAAAAAAB8fAAAAAAAAAAAAAAAAAAAfHwAAAAAAAAAAAAAAAAAAHx8AAAAAAAAAAAAAAAAAAB8fAAAAAAAAAAAAHx8fHwAfHwAAAAAAAAAPHx8fHx8fHx8AAAAAAAAAHx8AAAAAAB8fAAAAAAAAHx8PAAAAAAAfHwAAAAAAAB8fDwAAAAAAHx8AAAAAAAAfHw8AAAAAAB8fAAAAAAAAHx8PAAAAAAAfHwAAAAAAAB8fDwAAAAAAHx8AAAAAAAAPHxcAAAAADx8fAAAAAAAAAB8fHx8fHx8fHwAAAAAAAAAAFx8fHw8IHx8AAAA=',
+    'e': 'AAAAAAAAAAAAISEAAAAAAAAAAAAAAAAAACEhAAAAAAAAAAAAAAAAISEhISEAAAAAAAAAAAAAIQAAAAAhIQAAAAAAAAAAIQAAAAAAIQAAAAAAAAAAISEAAAAhIQAAAAAAAAAAISEAACEhIQAAAAAAAAAAACEhISEAAAAAAAAAAAAAAAAhAAAAAAAAAAAAAAAAAAAAIQAAAAAAAAAAACEAAAAhISEAAAAAAAAAAAAhAAAAISEhAAAAAAAAAAAhAAAAACEhIQAAAAAAAAAhIQAAAAAAACEhAAAAAAAhIQAAAAAAAAAhISEhISEhIQAAAAAAAAAAACEhISEhIQAAAAAAAAAAAAAAAAAAABsbGwAAAAAAAAAAAAAAGxsbGxsbAAAAAAAAAAAAGxsbAAAbGw4AAAAAAAAAGxsbAAAAGxsAAAAAAAAAGxsbAAAAGxsbAAAAAAAAABsbAAAAGxsbGwAAAAAAABsbGwAAGxsbGwAAAAAAAA4bGwAOGxsODgAAAAAAAAAbGxsbGxsAAAAAAAAAAAAAGxsbGwAAAAAAAAAAAAAAABsbGwAAAAAAAAAADgAAAAAbGwAAAAAAAAAAABsAAAAAGxsbAAAAAAAAGxsOAAAAABsbGwAAAAAAGxsbDgAAAAAbGxsbGxsbGxsbGwAAAAAAAA4bGxsbGw4OAAAAAAAAAAAAAAAaGhoaAAAAAAAAAAAAAAAAGhoaGgAAAAAAAAAAAAAAGhoaGhoaAAAAAAAAAAAaGhoAABoaGgAAAAAAAAAAGhoAAAAaGhoAAAAAAAAAGhoaAAAAGhoAAAAAAAAAABoaAAAAGhoAAAAAAAAAGhoaGgAaGhoaAAAAAAAAABoaGhoaGhoAAAAAAAAAAAAaGhoaGhoAAAAAAAAAABoAGhoaGhoAAAAAAAAAABoaABoaGhoAAAAAAAAAABoaAAAaGhoaAAAAAAAAABoaAAAAAAAaGhoAAAAAGhoaAAAAAAAAGhoaGhoaGhoaAAAAAAAAAAAaGhoaGhoAAAAAAAAAAAAAAAAAFhYWFhYWAAAAAAAAAAAAABYWFhYWFgAAAAAAAAAAFhYWFhYWFhYWAAAAAAAAFhYWFhYWFhYWFhYAAAAAFhYWFgAAAAAAFhYWAAAAABYWFgAAAAAAABYWFgAAAAAWFgAAAAAAFhYWFhYAABYWFhYAABYWFhYWFgAAAAAWFhYWFhYWFhYWAAAAAAAAFhYWFhYWFhYAAAAAAAAAABYWFhYWAAAAAAAAAAAAAAAWFhYWAAAAAAAAAAAAFhYAAAAWFhYWAAAAAAAAFhYWFgAAFhYWFhYWFhYWFhYWFgAAAAAWFhYWFhYWFhYWFgAAAAAAAAAWFhYWFhYWAAAAAAAAAAAAABsbGxsbGxsbAAAAAAAAAAAbGxsbGxsbGwAAAAAAAAAbAAAAAAAbGxsAAAAAAAAAGwAAAAAAGxsbAAAAAAAbGxsAAAAAABsbGwAAAAAAGxsAAAAAAAAbGxsAAAAAABsbAAAAAAAAGxsbAAAAGxsbGxsbGxsbGwAAAAAAABsbGxsAAAAAAAAAAAAAAAAbGxsbAAAAAAAAAAAAAAAAGxsbGwAAAAAAAAAAAAAAABsbGxsAAAAAAAAAAAAAAAAbGxsbGwAAAAAAAAAAAAAAAAAbGxsbGwAAAAAAGwAAAAAAGxsbGxsAAAAAABsAAAAAAAAAGxsbGxsbAAAAAAAAAAAAAAAYGBgYGAAAAAAAAAAAABgYGBgYGBgYGAAAAAAAABgYGBgYGBgYGBgMAAAAABgYGBgAAAAAABgYDAAAABgYGAAAAAAAAAAAGBgAAAAYGBgAAAAAAAAAABgYAAAAGBgAAAAAAAAAAAAAGAAAABgYGBgYGBgYGBgYGBgAAAAYGBgYGBgYGBgYGBgYAAAAGBgYGBgYGBgYGBgYGAAAABgYAAAAAAAAAAAAAAAAAAAYGBgAAAAAAAAAAAAAAAAAGBgYAAAAAAAAAAAAAAAAAAAYGBgYAAAAAAAAABgAAAAAABgYGBgYGBgYGBgYAAAAAAAADAwYGBgYGBgYDAAAAAAAAAAAGxsbGxsAAAAAAAAAAAAAABsbGxsbAAAAAAAAAAAAGxsbAAAAGxsbAAAAAAAAGxsbAAAAAAAbGxsAAAAAABsbAAAAAAAAGxsbAAAAGxsbGwAAAAAAABsbGwAAABsbGxsAAAAAAAAbGxsAAAAbGxsbGxsbGxsbGxsbAAAAGxsbGwAAAAAAAAAAAAAAABsbGxsAAAAAAAAAAAAAAAAbGxsbAAAAAAAAAAAAAAAAGxsbGwAAAAAAAAAAAAAAAAAAGxsbAAAAAAAAABsAAAAAABsbGxsAAAAAABsbAAAAAAAAGxsbGxsAABsbAAAAAAAAAAAAGxsbGxsAAAAAAAAAAAAAABgYGBgYAAAAAAAAAAAAGBgYGBgYGBgYAAAAAAAAGBgYAAAAABgYGBgAAAAAGBgYAAAAAAAAABgYAAAAGBgYAAAAAAAAAAAYGBgAABgYGAAAAAAAAAAAGBgYAAAYGBgYGBgYGBgYGBgYGAAAGBgYGBgYGBgYGBgYGBgAABgYGAAAAAAAAAAAAAAAAAAYGBgAAAAAAAAAAAAAAAAAGBgYAAAAAAAAAAAAAAAAABgYGBgAAAAAAAAAAAAAAAAAGBgYGAAAAAAAAAAAGAAAAAAYGBgYGAAAGBgYGBgAAAAAABgYGBgYGBgYGBgYAAAAAAAAABgYGBgYGAAAAAA=',
+    'f': 'AAAAAAAAAAAAQ0MhAAAAAAAAAAAAAAAAMiERMgAAAAAAAAAAAAAAISEAACEAAAAAAAAAAAAAACERAAAAAAAAAAAAAAAAAAAhAAAAAAAAAAAAAAAAAAAAMgAAAAAAAAAAAAAAAAAAAEMAAAAAAAAAAAAAAAAAISFDMkMyMgAAAAAAAAAAISEhQwAAAAAAAAAAAAAAAAAAACEAAAAAAAAAAAAAAAAAAAAhAAAAAAAAAAAAAAAAAAAAIQAAAAAAAAAAAAAAAAAAACEAAAAAAAAAAAAAAAAAAAAhAAAAAAAAAAAAAAAAAAAAIQAAAAAAAAAAAAAAAAAAACEhAAAAAAAAAAAAAAAAAAAAGDEYAAAAAAAAAAAAAAAMMSUlMQAAAAAAAAAAAAAAGDEAADEAAAAAAAAAAAAAADEYAAAlAAAAAAAAAAAAAAAxAAAAAAAAAAAAAAAAAAAMMQAAAAAAAAAAAAAAAAAAGDEAAAAAAAAAAAAAAAAAGDExMTExDAAAAAAAAAAAAAAxGAAAAAAAAAAAAAAAAAAAMRgAAAAAAAAAAAAAAAAAADEYAAAAAAAAAAAAAAAAAAAxAAAAAAAAAAAAAAAAAAAAMQAAAAAAAAAAAAAAAAAAADEAAAAAAAAAAAAAAAAAADExAAAAAAAAAAAAAAAAAAAYMQAAAAAAAAAAAAAAAAAAAAAAAAAaNRoAAAAAAAAAAAAAAAAaJycnAAAAAAAAAAAAAAAANQAAJwAAAAAAAAAAAAAANRoAAAAAAAAAAAAAAAAAADUaAAAAAAAAAAAAAAAAAA01GgAAAAAAAAAAAAAAAAAnNTU1GgAAAAAAAAAAAAAAJzUAAAAAAAAAAAAAAAAAABo1AAAAAAAAAAAAAAAAAAAaNQAAAAAAAAAAAAAAAAAAJzUAAAAAAAAAAAAAAAAAADUAAAAAAAAAAAAAAAAAAAA1AAAAAAAAAAAAAAAAAAANJwAAAAAAAAAAAAAAAAAAJxoAAAAAAAAAAAAAAAAaNScAAAAAAAAAAAAAAAAAAAAAAAAVKioAAAAAAAAAAAAAAAAVKioqAAAAAAAAAAAAAAAAKioAAAAAAAAAAAAAAAAAFSoVAAAAAAAAAAAAAAAAABUqCgAAAAAAAAAAAAAAAAAVKgAAAAAAAAAAAAAAACoqKioqKioAAAAAAAAAAAAVFSoqFRUKAAAAAAAAAAAAAAAqKgAAAAAAAAAAAAAAAAAAKioAAAAAAAAAAAAAAAAAACoqAAAAAAAAAAAAAAAAAAAqKgAAAAAAAAAAAAAAAAAAKioAAAAAAAAAAAAAAAAAACoqAAAAAAAAAAAAAAAAAAAqKgAAAAAAAAAAAAAAAAAAKioAAAAAAAAAAAAAAAAAAAAAAD09PQAAAAAAAAAAAAAAAC4fAD0AAAAAAAAAAAAAAA8fAAAAAAAAAAAAAAAAAAAfHwAAAAAAAAAAAAAAAAAAHx8AAAAAAAAAAAAAAAAAAB8fAAAAAAAAAAAAAAAAAD09PT0fAAAAAAAAAAAAAAAAHx8AAAAAAAAAAAAAAAAAAB8PAAAAAAAAAAAAAAAAAAAfAAAAAAAAAAAAAAAAAAAALgAAAAAAAAAAAAAAAAAAAD0AAAAAAAAAAAAAAAAAAAA9AAAAAAAAAAAAAAAAAAAALgAAAAAAAAAAAAAAAAAAHw8AAAAAAAAAAAAAAD0uHx8AAAAAAAAAAAAAAAAAAAAAAC4uLgAAAAAAAAAAAAAAFy4uLi4AAAAAAAAAAAAAAC4uFxcXAAAAAAAAAAAAAAAuAAAAAAAAAAAAAAAAABcXLhcXFwsAAAAAAAAAAAAuLi4uLi4XAAAAAAAAAAAAFxcuFxcXCwAAAAAAAAAAAAAALgAAAAAAAAAAAAAAAAAAAC4AAAAAAAAAAAAAAAAAAAAuAAAAAAAAAAAAAAAAAAAALgAAAAAAAAAAAAAAAAAAAC4AAAAAAAAAAAAAAAAAAAAuAAAAAAAAAAAAAAAAAAAALgAAAAAAAAAAAAAAAAAAAC4AAAAAAAAAAAAAAAAAAAAuAAAAAAAAAAAAAAAAAAAAAAAAKysWAAAAAAAAAAAAAAAWKxYrKwAAAAAAAAAAAAAAKwAAFgsAAAAAAAAAAAAAACsAAAAAAAAAAAAAAAAAACsrAAAAAAAAAAAAAAAAAAArKwAAAAAAAAAAAAAAABYWKysWFhYAAAAAAAAAAAAAACsrAAAAAAAAAAAAAAAAAAArKwAAAAAAAAAAAAAAAAAAKysAAAAAAAAAAAAAAAAAACsrAAAAAAAAAAAAAAAAAAArKwAAAAAAAAAAAAAAAAAAKysAAAAAAAAAAAAAAAAAACsrAAAAAAAAAAAAAAAAAAArKwAAAAAAAAAAAAAAAAAWKysrFgAAAAAAAAAAAAAAAAAALi4uAAAAAAAAAAAAAAAXLi4uLgAAAAAAAAAAAAAALi4XABcAAAAAAAAAAAAAAC4AAAAAAAAAAAAAAAAAAAAuAAAAAAAAAAAAAAAAAC4uLi4uLhcAAAAAAAAAAAAXLi4uFxcLAAAAAAAAAAAAAAAuAAAAAAAAAAAAAAAAAAAALgAAAAAAAAAAAAAAAAAAAC4AAAAAAAAAAAAAAAAAAAAuAAAAAAAAAAAAAAAAAAAALgAAAAAAAAAAAAAAAAAAAC4AAAAAAAAAAAAAAAAAAAAuAAAAAAAAAAAAAAAAAAAALgAAAAAAAAAAAAAAAAAAAC4AAAAAAAAAAAA=',
+    'g': 'AAAAAAAAAAAyAAAAAAAAAAAAAAAAACUZGQAyAAAAAAAAAAAAADIZAAAAMgAAAAAAAAAAAAwyAAAAMiUAAAAAAAAAAAAyAAAAGQAZAAAAAAAAAAAAJQAAABkAGRkAAAAAAAAAMhkAADIZABkZAAAAAAAAADIMAAwZAAAAJQAAAAAAAAAyJTIMAAAAADIAAAAAAAAAABkAAAAAAAAyAAAAAAAAAAAAAAAAAAAAMgAAAAAAAAAAAAAAAAAAABkAAAAAAAAAAAAAAAAAABkZAAAAAAAAAAAAAAAAAAAyAAAAAAAAAAAAAAAAABkyDAAAAAAAAAAAAAAAGTIZAAAAAAAAAAAAAAAAAAAAABEiIhEAAAAAAAAAAAAAABoiIiIiAAAAAAAAAAAAACIiEQARIgAAAAAAAAAAABoiCQAAEREAAAAAAAAAABoaAAAAACIRAAAAAAAAAAAiEQAAACIiAAAAAAAAAAAiIgAAABoiIgAAAAAAAAAAIhoAERoaESIAAAAAAAAAACIiIiIiACIiAAAAAAAAAAARIiIRCQAiIgAAAAAAAAAAAAAAAAAAIiIAAAAAAAAAAAAAAAAAACIRAAAAAAAAEQkAAAAAABEiEQAAAAAAACIiAAAAAAAiIgAAAAAAAAAAGiIaEREaIhEAAAAAAAAAAAARGiIiGgkAAAAAAAAAAAAAAAAAAAAAICAgEAAAAAAAAAAAAAAgICAgICAAAAAAAAAAAAAYIBAAACAQAAAAAAAAAAAgIAAAAAAgEAAAAAAAAAAgIBAAAAAAIBAAAAAAAAAIICAAAAAAECAQAAAAAAAAECAAAAAAECAgEAAAAAAAACAgAAgQIBggIBAAAAAAAAAQICAgIAAAICAQAAAAAAAAECAgEAAAACAgEAAAAAAAAAAAAAAAAAAgIAgAAAAAAAAAAAAAAAAAICAAAAAAAAAAAAAAAAAAACAgAAAAAAAgIAgAAAAAABggAAAAAAAAACAgIAAAACAgAAAAAAAAAAAACBAgICAgCAAAAAAAAAAAAAAAAB4eHh4AAAAAAAAAAAAADx4eHh4eHg8AAAAAAAAADx4eFg8PFh4eAAAAAAAAAB4eAAAAAAAeHgAAAAAAAB4eFgAAAAAAHhYAAAAAAAAeHg8AAAAADx4PAAAAAAAAHh4PAAAAAA8eDwAAAAAAAB4eDwAAAAAeHg8AAAAAAAAeHh4AAAAeHh4PAAAAAAAAAA8eHh4eHhYeDwAAAAAAAAAADx4eHgAPHg8AAAAAAAAAAAAAAAAADx4PAAAAAAAAAAAAAAAAAB4eAAAAAAAAAAAAAAAADw8eHgAAAAAAAAAeHh4eHh4eHgAAAAAAAAAADx4eHh4eDwcAAAAAAAAAAAAAACAgICAAACAAAAAAAAAAICAAAAAgICAQAAAAAAAAACAAAAAAACAgAAAAAAAAACAgAAAAAAAgIAAAAAAAAAAgIAAAAAAAICAAAAAAAAAAACAgAAAAACAAAAAAAAAAAAAgIAAAACAgAAAAAAAAAAAAACAgICAAAAAAAAAAAAAAACAgAAAAAAAAAAAAAAAAAAAgIAAAAAAAAAAAAAAAAAAAACAgICAgAAAAAAAAAAAAACAgACAgICAgAAAAAAAAACAAAAAAAAAgIBAAAAAAACAgAAAAAAAAACAQAAAAAAAgIAAAAAAAAAAgAAAAAAAAEBAgEBAQECAQEAAAAAAAAAAAAAAOHR0dDh0dAAAAAAAAAAAdHR0dHR0dHQAAAAAAAAAOHR0ODg4WHR0AAAAAAAAAHR0OAAAAAB0dAAAAAAAAAB0dAAAAAAAdHQAAAAAAAB0dAAAAAAAAHR0AAAAAAAAdHQAAAAAAAB0dAAAAAAAAHR0AAAAAAAAdHQAAAAAAAAAdHQAAAAAAHR0AAAAAAAAAHR0HAAAADh0dAAAAAAAAAA4dHR0dHR0dHQAAAAAAAAAADh0dHR0OHR0AAAAAAAAAAAAAAAAAAB0dAAAAAAAAAAcOAAAAABYdDgAAAAAAAAAOHR0dHR0dHQAAAAAAAAAABx0dHR0dDgAAAAAAAAAAAAAAICAgICAgIAAAAAAAAAAAICAAICAgAAAAAAAAAAAAICAAAAAQIBAAAAAAAAAAACAgAAAAACAgAAAAAAAAAAAgIAAAAAAgIAAAAAAAAAAAECAAAAAQIAAAAAAAAAAAAAAQIAAgIBAAAAAAAAAAAAAAEBAQEBAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAAgICAgIAAAAAAAAAAAAAAAECAgICAgIAgAAAAAAAAAICAAAAAAACAgAAAAAAAAICAQAAAAAAAgIAAAAAAAACAgEAAAAAAAECAAAAAAAAAgIBAAAAAAACAQAAAAAAAAABAYIBAQEBgQAAAAAAAAAAAAAB0dHR0AHR0AAAAAAAAAAB0dHR0dHR0dAAAAAAAAAB0dDgcADg4dHQAAAAAAAB0dDgAAAAAAHR0AAAAAAAAdHQ4AAAAAAB0dAAAAAAAAHR0OAAAAAAAdHQAAAAAAAB0dDgAAAAAAHR0AAAAAAAAdHQ4AAAAAAB0dAAAAAAAAHR0OAAAAAAAdHQAAAAAAAB0dHQAAAAAOHR0AAAAAAAAADh0dHR0dHR0dAAAAAAAAAAAOHR0dHQAdDgAAAAAAAAAAAAAAAAAAHQ4AAAAAAAAADgAAAAAADh0OAAAAAAAAAB0dHQAdHR0dAAAAAAAAAAAOHR0dHR0OAAAAAAA=',
+    'h': 'AAAAKwAAAAAAAAAAAAAAAAAAACsrAAAAAAAAAAAAAAAAAAArKwAAAAAAAAAAAAAAAAAAKysAAAAAAAAAAAAAAAAAACsrAAAAAAsVAAAAAAAAAAArKwAAAAArKxUAAAAAAAAAKysAAAArCwArAAAAAAAAAAArAAAVAAAAKwAAAAAAAAAAKwAAKwAAABUAAAAAAAAAACsAFRUAAAAVAAAAAAAAAAArACsAAAAAFQAAAAAAAAAAKwsrAAAAABUAAAAAAAAAACsVAAAAAAAVAAAAAAAAAAArIAAAAAAAFQAAAAAAAAAAKxUAAAAAACsAAAAAAAAAACsLAAAAAAAVAAAAAAAAAAAAJBIAAAAAAAAAAAAAAAAAEiQSAAAAAAAAAAAAAAAAABIkEgAAAAAAAAAAAAAAAAAbJBIAAAAAAAAAAAAAAAAAJCQSAAAAAAAAAAAAAAAAACQkAAAAAAAAAAAAAAAAAAAkJAAAAAAAAAAAAAAAAAAAJBIAAAkkJBIAAAAAAAAAJCQAAAAkJCQkAAAAAAAAACQkAAkkGwAbJAAAAAAAAAAkEgASJAAAEiQAAAAAAAAAJBISGwAAABIkCQAAAAAAJCQSJBIAAAASJBIAAAAAACQkJBIAAAAACSQbAAAAAAAkJCQAAAAAAAAkJAAAAAAAJCQJAAAAAAAAABIAAAAAAAAlEwAAAAAAAAAAAAAAAAAJJRMAAAAAAAAAAAAAAAAAEyUTAAAAAAAAAAAAAAAAABMlCQAAAAAAAAAAAAAAAAATJQAAAAAAAAAAAAAAAAAAEyUAAAAAAAAAAAAAAAAAACUlAAAAAAAAAAAAAAAAAAAlAAAAABMlEwAAAAAAAAAAJQAAABMlJSUAAAAAAAAAACUAAAAlEyUTAAAAAAkAACUlAAAlEwAlAAAAAAAlAAAlHAAcEwAAJRMAAAAlEwAAJRMAJQAAABMlAAAlJQAAACUlJRMAAAAJJSUlEwAAAAAlJSUAAAAAAAAAAAAAAAAAJRwAAAAAAAAAAAAAAAAAAAAAACMAAAAAAAAAAAAAAAAAABIjIwAAAAAAAAAAAAAAAAAAIyMAAAAAAAAAAAAAAAAAACMjAAAAAAAAAAAAAAAAAAAjIwAAAAAAAAAAAAAAAAAAIyMAAAAAAAAAAAAAAAAAACMjAAAjIxIAAAAAAAAAAAAjIxsjIyMjCQAAAAAAAAAAIyMjIwAAIxIAAAAAAAAAACMjGwAAACMSAAAAAAAAAAAjIxIAAAAjEgAAAAAAAAAAIyMAAAAAIxIAAAAAAAAAACMjAAAAACMjAAAAAAAAAAAjIwAAAAASIwAAAAAAAAAjIyMAAAAAEiMAAAAAAAAAEiMAAAAAABIjAAAAAAAAAAAkJAAAAAAAAAAAAAAAAAAAJCQAAAAAAAAAAAAAAAAAACQkAAAAAAAAAAAAAAAAAAAkJAAAAAAAAAAAAAAAAAAAJCQAAAAAAAAAAAAAAAAAACQkAAAAAAAAAAAAAAAAAAAkJAAAAAAAAAAAAAAAAAAAJBIAAAAAAAAAAAAAAAAAACQAABIkJAAAAAAAAAAAAAAkAAAkJCQkAAAAAAAAAAAAJAAAEgAkJAAAAAAAAAAAEiQSJAAAJCQAAAAAAAAAACQkJAAAACQkAAAAAAAAAAAkJCQAAAAkJAAAAAAAAAAAJCQAAAAAJCQAAAAAAAAAACQkAAAAACQkEgAAAAAAAAAfHxAAAAAAAAAAAAAAAAAAHx8QAAAAAAAAAAAAAAAAAB8fEAAAAAAAAAAAAAAAAAAfHxAAAAAAAAAAAAAAAAAAHx8QAAgQEBAAAAAAAAAAAB8fEB8fHx8fHwAAAAAAAAAfHx8fEBAQGB8YAAAAAAAAHx8fAAAAAAAfHwAAAAAAAB8fEAAAAAAAHx8AAAAAAAAfHxAAAAAAAB8fAAAAAAAAHx8QAAAAAAAfHwAAAAAAAB8fEAAAAAAAHx8AAAAAAAAfHxAAAAAAAB8fAAAAAAAAHx8QAAAAAAAfHwAAAAAAAB8fEAAAAAAAHx8AAAAAAAAfHxAAAAAAAB8fAAAAAAAjIyMjEgAAAAAAAAAAAAAAAAAjIxIAAAAAAAAAAAAAAAAAEiMSAAAAAAAAAAAAAAAAABIjEgAAAAAAAAAAAAAAAAASIxIAAAAAAAAAAAAAAAAAEiMSAAAAAAAAAAAAAAAAABIjEhISIyMaAAAAAAAAAAASIyMAAAAjIyMAAAAAAAAAEiMSAAAAACMjAAAAAAAAABIjEgAAAAAjIwAAAAAAAAASIxIAAAAAIyMAAAAAAAAAEiMSAAAAACMjAAAAAAAAABIjEgAAAAAjIwAAAAAAAAASIxIAAAAAIyMAAAAAAAAAEiMSAAAAACMjAAAAAAAAEhojIxIACRIjIxIAAAAAACAgEAAAAAAAAAAAAAAAAAAgIBAAAAAAAAAAAAAAAAAAICAQAAAAAAAAAAAAAAAAACAgEAAAAAAAAAAAAAAAAAAgIBAAAAAAAAAAAAAAAAAAICAQACAgIAAAAAAAAAAAACAgICAgICAgCAAAAAAAAAAgICAAAAAQIBAAAAAAAAAAICAQAAAAACAgAAAAAAAAACAgEAAAAAAgIAAAAAAAAAAgIBAAAAAAICAAAAAAAAAAICAQAAAAACAgAAAAAAAAACAgEAAAAAAgIAAAAAAAAAAgIBAAAAAAICAAAAAAAAAAICAQAAAAACAgAAAAAAAAACAgEAAAAAAgIAAAAAA=',
+    'i': 'AAAAAAAAAEcjAAAAAAAAAAAAAAAAAABHIwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIwAAAAAAAAAAAAAAAAAAAEcAAAAAAAAAAAAAAAAAAABHAAAAAAAAAAAAAAAAAAAARwAAAAAAAAAAAAAAAAAAAEcAAAAAAAAAAAAAAAAAAABHAAAAAAAAAAAAAAAAAAAARwAAAAAAAAAAAAAAAAAAAEcAAAAAAAAAAAAAAAAAAABHAAAAAAAAAAAAAAAAAAAARwAAAAAAAAAAAAAAAAAAAEcAAAAAAAAAAAAAAAAAAAAjAAAAAAAAAAAAAAAAAAAAHjsAAAAAAAAAAAAAAAAAAB47AAAAAAAAAAAAAAAAAAAeOwAAAAAAAAAAAAAAAAAADw8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAeHgAAAAAAAAAAAAAAAAAALR4AAAAAAAAAAAAAAAAAADseAAAAAAAAAAAAAAAAAAA7AAAAAAAAAAAAAAAAAAAAOwAAAAAAAAAAAAAAAAAAOzsAAAAAAAAAAAAAAAAAADs7AAAAAAAAAAAAAAAAAAA7OwAAAAAAAAAAAAAAAAAAOzsAAAAAAAAAAAAAAAAAADs7AAAAAAAAAAAAAAAAAAAXLy8AAAAAAAAAAAAAAAAAFy8vAAAAAAAAAAAAAAAAABcvFwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC8XAAAAAAAAAAAAAAAAAAAvFwAAAAAAAAAAAAAAAAAvLxcAAAAAAAAAAAAAAAAALy8XAAAAAAAAAAAAAAAAAC8vAAAAAAAAAAAAAAAAAAAvLwAAAAAAAAAAAAAAAAAALy8AAAAAABcAAAAAAAAAAC8vAAAAABcjAAAAAAAAAAAvLxcAAC8vAAAAAAAAAAAAABcvLy8XAAAAAAAAAAAAAAAAADExAAAAAAAAAAAAAAAAAAAxMQAAAAAAAAAAAAAAAAAAGRkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGQwAAAAAAAAAAAAAAAAAADExAAAAAAAAAAAAAAAAAAAxMQAAAAAAAAAAAAAAAAAxMTEAAAAAAAAAAAAAAAAAMTEZAAAAAAAAAAAAAAAAADExGQAAAAAAAAAAAAAAAAAxMRkAAAAAAAAAAAAAAAAAMTEZAAAAAAAAAAAAAAAAADExGQAAAAAAAAAAAAAAAAAxMRkAAAAAAAAAAAAAAAAAGTEZAAAAAAAAAAAAAAAAADY2AAAAAAAAAAAAAAAAAAA2NgAAAAAAAAAAAAAAAAAANjYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADY2AAAAAAAAAAAAAAAAAAA2NgAAAAAAAAAAAAAAAAAANjYAAAAAAAAAAAAAAAAAADYAAAAAAAAAAAAAAAAAAAA2AAAAAAAAAAAAAAAAAAAANgAAAAAAAAAAAAAAAAAAADYAAAAAAAAAAAAAAAAAAAA2AAAAAAAAAAAAAAAAAAAANjYAAAAAAAAAAAAAAAAAADY2NgAAAAAAAAAAAAAAAAAuLi4AAAAAAAAAAAAAAAAALi4uAAAAAAAAAAAAAAAAABcXFwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC4uAAAAAAAAAAAAAAAAAAAuLgAAAAAAAAAAAAAAAAAALi4AAAAAAAAAAAAAAAAAAC4uAAAAAAAAAAAAAAAAAAAuLgAAAAAAAAAAAAAAAAAALi4AAAAAAAAAAAAAAAAAAC4uAAAAAAAAAAAAAAAAAAAuLgAAAAAAAAAAAAAAAAAALi4AAAAAAAAAAAAAAAAAAC4uAAAAAAAAAAAAAAAAAAAuLgAAAAAAAAAAAAAAAAAALi4AAAAAAAAAAAAAAAAAABcuAAAAAAAAAAAAAAAAAAAuLi4AAAAAAAAAAAAAAAAAIi4XAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAXFy4uLgAAAAAAAAAAAAAAAAAXLi4AAAAAAAAAAAAAAAAAFy4uAAAAAAAAAAAAAAAAABcuLgAAAAAAAAAAAAAAAAAXLi4AAAAAAAAAAAAAAAAAFy4uAAAAAAAAAAAAAAAAABcuLgAAAAAAAAAAAAAAAAAXLi4AAAAAAAAAAAAAAAAAFy4uAAAAAAAAAAAAAAAXFy4uLhcAAAAAAAAAAAAAAC0tLQAAAAAAAAAAAAAAAAAtLS0AAAAAAAAAAAAAAAAAFxcXAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAALS0XAAAAAAAAAAAAAAAAAC0tFwAAAAAAAAAAAAAAAAAtLRcAAAAAAAAAAAAAAAAALS0XAAAAAAAAAAAAAAAAAC0tFwAAAAAAAAAAAAAAAAAtLRcAAAAAAAAAAAAAAAAALS0XAAAAAAAAAAAAAAAAAC0tFwAAAAAAAAAAAAAAAAAtLRcAAAAAAAAAAAAAAAAALS0XAAAAAAAAAAAAAAAAAC0tFwAAAAAAAAA=',
+    'j': 'AAAAAAAAAAArAAAAAAAAAAAAAAAAAAAAKwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACsAAAAAAAAAAAAAAAAAAAArKwAAAAAAAAAAAAAAAAAAKysAAAAAAAAAAAAAAAAAACsrAAAAAAAAAAAAAAAAAAAVKwAAAAAAAAAAAAAAAAAAACsAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAVgAAAAAAAAAAAAAAAAAAAFYAAAAAAAAAAAAAACsVAABAAAAAAAAAAAAAAAAAQFZWFQAAAAAAAAAAAAAAAAAAAA80AAAAAAAAAAAAAAAAAAAPNAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAuHwAAAAAAAAAAAAAAAAAAPhUAAAAAAAAAAAAAAAAAAD4VAAAAAAAAAAAAAAAAAAA+FQAAAAAAAAAAAAAAAAAAPgoAAAAAAAAAAAAAAAAAAD4AAAAAAAAAAAAAAAAAAAA+AAAAAAAAAAAAAAAAAAAfPgAAAAAAAAAAAAAAAAAAHz4AAAAAAAAAAAAAAAAAAB8+AAAAAAAAAAAAAAAuAA8+HwAAAAAAAAAAAAAAHz4+KQAAAAAAAAAAAAAAAAAAAAAgPwAAAAAAAAAAAAAAAAAAID8AAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAED8AAAAAAAAAAAAAAAAAAC8gAAAAAAAAAAAAAAAAAAA/IAAAAAAAAAAAAAAAAAAAPyAAAAAAAAAAAAAAAAAAAD8gAAAAAAAAAAAAAAAAAAA/IAAAAAAAAAAAAAAAAAAAPyAAAAAAAAAAAAAAAAAAAD8gAAAAAAAAAAAAAAAAAAA/EAAAAAAAAAAAAAAAAAAQPwAAAAAAAAAAAAAAACA/PxAAAAAAAAAAAAAAAAAAAAA3AAAAAAAAAAAAAAAAAAAONw4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAbAAAAAAAAAAAAAAAAAAAANxsAAAAAAAAAAAAAAAAAADcbAAAAAAAAAAAAAAAAAAA3GwAAAAAAAAAAAAAAAAAANxsAAAAAAAAAAAAAAAAAADcbAAAAAAAAAAAAAAAAAAA3GwAAAAAAAAAAAAAAAAAANxsAAAAAAAAAAAAAAAAAACk3AAAAAAAAAAAAAAAbAAAbNwAAAAAAAAAAAAAANxsAKTcAAAAAAAAAAAAAABs3GzcbAAAAAAAAAAAAAAAAKTcpAAAAAAAAAAAAAAAAAAAAAD4fAAAAAAAAAAAAAAAAAAA+PgAAAAAAAAAAAAAAAAAAHxAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAfEAAAAAAAAAAAAAAAAAAAPh8AAAAAAAAAAAAAAAAAAD4fAAAAAAAAAAAAAAAAAAA+HwAAAAAAAAAAAAAAAAAAPh8AAAAAAAAAAAAAAAAAAD4fAAAAAAAAAAAAAAAAAAA+HwAAAAAAAAAAAAAAAAAAPhAAAAAAAAAAAAAAAAAAAD4AAAAAAAAAAAAAAAAAABA+AAAAAAAAAAAAAAAAAAAfAAAAAAAAAAAAAAAfPi8fEAAAAAAAAAAAAAAAAAAAADAwAAAAAAAAAAAAAAAAAAAwMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAYMDAwAAAAAAAAAAAAAAAAGDAwMAAAAAAAAAAAAAAAAAAAGDAAAAAAAAAAAAAAAAAAABgwAAAAAAAAAAAAAAAAAAAYMAAAAAAAAAAAAAAAAAAAGDAAAAAAAAAAAAAAAAAAABgwAAAAAAAAAAAAAAAAAAAYMAAAAAAAAAAAAAAAAAAAGDAAAAAAAAAAAAAAAAAAABgwAAAAAAAAAAAAAAAAAAAkJAAAAAAAAAAAAAAAMBgYMBgAAAAAAAAAAAAAADAwMCQAAAAAAAAAAAAAAAAAAAAfHwAAAAAAAAAAAAAAAAAAPj4AAAAAAAAAAAAAAAAAAA8PAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAfHx8AAAAAAAAAAAAAAAAAAC4+AAAAAAAAAAAAAAAAAAAfPgAAAAAAAAAAAAAAAAAAHz4AAAAAAAAAAAAAAAAAAB8+AAAAAAAAAAAAAAAAAAAfPgAAAAAAAAAAAAAAAAAAHz4AAAAAAAAAAAAAAAAAAB8+AAAAAAAAAAAAAAAAAAAfPgAAAAAAAAAAAAAAAAAAHy4AAAAAAAAAAAAAAAAfAB8PAAAAAAAAAAAAAAAfPi4fAAAAAAAAAAAAAAAAAAAAGzYAAAAAAAAAAAAAAAAAABs2AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0bGxsAAAAAAAAAAAAAAAAbNjY2AAAAAAAAAAAAAAAAAAAbNgAAAAAAAAAAAAAAAAAAGzYAAAAAAAAAAAAAAAAAABs2AAAAAAAAAAAAAAAAAAAbNgAAAAAAAAAAAAAAAAAAGzYAAAAAAAAAAAAAAAAAABs2AAAAAAAAAAAAAAAAAAAbNgAAAAAAAAAAAAAAAAAAGzYAAAAAAAAAAAAAAAAAABs2AAAAAAAAAAAAAAAADRsoNgAAAAAAAAAAAAAAGzY2KA0AAAAAAAA=',
+    'k': 'AAAAKgAAAAAAAAAAAAAAAAAAACoAAAAAAAAAAAAAAAAAAAAqAAAAAAAAAAAAAAAAAAAAKgAAAAAAAAAAAAAAAAAAACoAAAAAAAAAAAAAAAAAAAAqFQAAAAAAAAoAAAAAAAAAKioAAAAAKioqAAAAAAAAACoqAAAVKgoAAAAAAAAAAAAqKgAqFQAAAAAAAAAAAAAAKioVKgAAAAAAAAAAAAAAACoqHwAAAAAAAAAAAAAAAAAqKgAAAAAAAAAAAAAAAAAAKioqAAAAAAAAAAAAAAAAABUqFRUfFQAAAAAAAAAAAAAAKgAAACoqKhUAAAAAAAAAACoAAAAAChUKAAAAAAAAAAAAABMAAAAAAAAAAAAAAAAAACYmAAAAAAAAAAAAAAAAAAAmEwAAAAAAAAAAAAAAAAATJhMAAAAAAAAAAAAAAAAAEyYTAAAAAAAAAAAAAAAAABMmCgAAAAAAAAAAAAAAAAATJgAAAAAAJhMAAAAAAAAAEyYAAAAKJiYKAAAAAAAAACYmAAoTJhMKAAAAAAAAAAAmJgAmJhMAAAAAAAAAAAAAJgAdJgAAAAAAAAAAAAAAACYmJiYAAAAAAAAAAAAAAAAmEwAdJgoAAAAAAAAAAAAmJgAAEyYmAAAAAAAAAAAAJiYAAAATJiYdEwAAAAAAACYdAAAAAAomJgoAAAAAAAASJAAAAAAAAAAAAAAAAAAAJCQAAAAAAAAAAAAAAAAAACQkAAAAAAAAAAAAAAAAAAAkJAAAAAAAAAAAAAAAAAAAJAAAAAAAAAAAAAAAAAAAACQAAAAAACQAAAAAAAAAABIkAAAACSQbAAAAAAAAAAAkEgAAACQkAAAAAAAAAAAAJBIAACQkAAAAAAAAAAAAACQSABskCQAAAAAAAAAAAAAkEiQkAAAAAAAAAAAAAAASJBskJBIAAAAAAAAAAAAAJCQkABIkJAAAAAAAAAAAACQkEgAAEhskGxIJAAAAAAAkJAAAAAAAACQkJCQkAAAAJCQAAAAAAAAAEhISEgAAAAAAACMAAAAAAAAAAAAAAAAAAAAjIwAAAAAAAAAAAAAAAAAAIyMAAAAAAAAAAAAAAAAAACMjAAAAAAAAAAAAAAAAAAAjIwAAAAAAAAAAAAAAAAAAIyMAAAAAGhEAAAAAAAAAACMjAAAAIyMRAAAAAAAAAAAjIwAAGiMaAAAAAAAAAAAAIyMAIyMjAAAAAAAAAAAAACMjGiMjAAAAAAAAAAAAAAAjIyMjIwAAAAAAAAAAAAAAIyMRESMjCQAAAAAAAAAAIyMjAAARIyMAAAAAAAAAACMjAAAAACMjCQAAAAAAAAAjIwAAAAAAIxEAAAAAAAAAESMAAAAAABEaAAAAAAAAAAAAJSUAAAAAAAAAAAAAAAAAACUlAAAAAAAAAAAAAAAAAAAlJQAAAAAAAAAAAAAAAAAAJRMAAAAAAAAAAAAAAAAAJSUAAAAAAAAAAAAAAAAAACUlAAAAAAAAAAAAAAAAAAAlJQAAAAAAAAAAAAAAAAAAJSUAAAAAAAAAAAAAAAAAACUlAAAlJSUAAAAAAAAAAAAlJQATJSUlAAAAAAAAAAAAJSUAJQAAJQAAAAAAAAAAACUlEwkAEwkAAAAAAAAAAAAlJSUlAAAAAAAAAAAAAAAAJSUAEyUAAAAAAAAAAAAAACUlABMlJQAAAAAAAAAAAAAlEwAAEyUcAAAAAAAAAAAgIBAAAAAAAAAAAAAAAAAAICAQAAAAAAAAAAAAAAAAACAgEAAAAAAAAAAAAAAAAAAgIBAAAAAAAAAAAAAAAAAAICAQAAAAAAgQEAAAAAAAACAgEAAAAAAgIBAAAAAAAAAgIBAAABAgIBAAAAAAAAAAICAQABAgIBAAAAAAAAAAACAgEAAgICAAAAAAAAAAAAAgIBggIBAAAAAAAAAAAAAAICAgICAAAAAAAAAAAAAAACAgGBAgIBAAAAAAAAAAAAAgIBAAECAgEAAAAAAAAAAAICAQAAAQICAQAAAAAAAAACAgEAAAAAAgIAAAAAAAAAAgIBAAAAAAECAYAAAAAAAlJSUlEwAAAAAAAAAAAAAAAAAlJRMAAAAAAAAAAAAAAAAAEyUTAAAAAAAAAAAAAAAAABMlEwAAAAAAAAAAAAAAAAATJRMAAAAAAAAAAAAAAAAAEyUTAAAAAAAAAAAAAAAAABMlEwAJJSUlCQAAAAAAAAATJRMAACUTAAAAAAAAAAAAEyUTABMlAAAAAAAAAAAAABMlEwATAAAAAAAAAAAAAAATJRMlEwAAAAAAAAAAAAAAEyUcEyUTAAAAAAAAAAAAABMlEwAlJRMAAAAAAAAAAAATJRMACSUcAAAAAAAAAAAAEyUTAAAlJSUAAAAAAAAAEyUlHBMAABwlHAAAAAAAACAgEAAAAAAAAAAAAAAAAAAgIBAAAAAAAAAAAAAAAAAAICAQAAAAAAAAAAAAAAAAACAgEAAAAAAAAAAAAAAAAAAgIBAAAAAAAAAAAAAAAAAAICAQAAAAACAgEAAAAAAAACAgEAAAECAgEAAAAAAAAAAgIBAAECAgEAAAAAAAAAAAICAQACAgIAAAAAAAAAAAACAgGCAgEAAAAAAAAAAAAAAgICAgIAAAAAAAAAAAAAAAICAYECAgEAAAAAAAAAAAACAgEAAQICAQAAAAAAAAAAAgIBAAABAgGAAAAAAAAAAAICAQAAAAICAgAAAAAAAAACAgEAAAAAAYIBgAAAA=',
+    'l': 'AAAAAAAAAAAuAAAAAAAAAAAAAAAAAAAuLgAAAAAAAAAAAAAAAAAALi4AAAAAAAAAAAAAAAAAAC4uAAAAAAAAAAAAAAAAAAAuLgAAAAAAAAAAAAAAAAAALi4AAAAAAAAAAAAAAAAAAC4uAAAAAAAAAAAAAAAAAAAuLgAAAAAAAAAAAAAAAAAALi4AAAAAAAAAAAAAAAAAAC4uAAAAAAAAAAAAAAAAAAAuLgAAAAAAAAAAAAAAAAAALi4AAAAAAAAAAAAAAAAAAC4uAAAAAAAAAAAAAAAAAAAuLgAAAAAAAAAAAAAAAAAALi4AAAAAAAAAAAAAAAAAABcuAAAAAAAAAAAAAAAAAAAAADQAAAAAAAAAAAAAAAAAADQ0AAAAAAAAAAAAAAAAAAA0NAAAAAAAAAAAAAAAAAANNBoAAAAAAAAAAAAAAAAAGjQaAAAAAAAAAAAAAAAAABo0AAAAAAAAAAAAAAAAAAAnNAAAAAAAAAAAAAAAAAAANDQAAAAAAAAAAAAAAAAAADQAAAAAAAAAAAAAAAAAAAA0AAAAAAAAAAAAAAAAAAAANAAAAAAAAAAAAAAAAAAAADQAAAAAAAAAAAAAAAAAADQ0AAAAAAAAAAAAAAAAAAA0NAAAAAAAAAAAAAAAAAAANDQAAAAAAAAAAAAAAAAAAAA0AAAAAAAAAAAAAAAAAAAtFgAAAAAAAAAAAAAAAAAALRYAAAAAAAAAAAAAAAAAFi0LAAAAAAAAAAAAAAAAABYtAAAAAAAAAAAAAAAAAAAtLQAAAAAAAAAAAAAAAAAALS0AAAAAAAAAAAAAAAAAAC0AAAAAAAAAAAAAAAAAAC0tAAAAAAAAAAAAAAAAAAAtLQAAAAAAAAAAAAAAAAAALS0AAAAAAAAAAAAAAAAAAC0tAAAAAAAAAAAAAAAAAAAtLQAAAAAACwAAAAAAAAAALS0AAAAAABYAAAAAAAAAAC0tAAAAABYWAAAAAAAAAAAALS0AAC0tAAAAAAAAAAAAACItLS0LAAAAAAAAAAAAAAAAAC0tAAAAAAAAAAAAAAAAAAAtLQAAAAAAAAAAAAAAAAAALS0AAAAAAAAAAAAAAAAAAC0tAAAAAAAAAAAAAAAAAAAtLQAAAAAAAAAAAAAAAAAALS0AAAAAAAAAAAAAAAAAAC0tAAAAAAAAAAAAAAAAAAAtLQAAAAAAAAAAAAAAAAAALS0AAAAAAAAAAAAAAAAAAC0tAAAAAAAAAAAAAAAAAAAtLQAAAAAAAAAAAAAAAAAALS0AAAAAAAAAAAAAAAAAAC0tAAAAAAAAAAAAAAAAAAAtLQAAAAAAAAAAAAAAAAAtLS0AAAAAAAAAAAAAAAAAFi0hAAAAAAAAAAAAAAAAAAAAOwAAAAAAAAAAAAAAAAAAOx0AAAAAAAAAAAAAAAAAADsdAAAAAAAAAAAAAAAAAAA7HQAAAAAAAAAAAAAAAAAAOx0AAAAAAAAAAAAAAAAAADsdAAAAAAAAAAAAAAAAAAA7HQAAAAAAAAAAAAAAAAAAOx0AAAAAAAAAAAAAAAAAADsdAAAAAAAAAAAAAAAAAAA7HQAAAAAAAAAAAAAAAAAAOwAAAAAAAAAAAAAAAAAAADsAAAAAAAAAAAAAAAAAAAA7AAAAAAAAAAAAAAAAAAAAOwAAAAAAAAAAAAAAAAAAADsAAAAAAAAAAAAAAAAAAAA7LAAAAAAAAAAAAAAAAAAALS0AAAAAAAAAAAAAAAAAAC0tAAAAAAAAAAAAAAAAAAAtLQAAAAAAAAAAAAAAAAAALS0AAAAAAAAAAAAAAAAAAC0tAAAAAAAAAAAAAAAAAAAtLQAAAAAAAAAAAAAAAAAALS0AAAAAAAAAAAAAAAAAAC0tAAAAAAAAAAAAAAAAAAAtLQAAAAAAAAAAAAAAAAAALS0AAAAAAAAAAAAAAAAAAC0tAAAAAAAAAAAAAAAAAAAtLQAAAAAAAAAAAAAAAAAALS0AAAAAAAAAAAAAAAAAAC0tAAAAAAAAAAAAAAAAAAAtLQAAAAAAAAAAAAAAAAAALS0AAAAAAAAAAAAAAAAoKCgoKAAAAAAAAAAAAAAAAAAoKCgAAAAAAAAAAAAAAAAAFCgoAAAAAAAAAAAAAAAAABQoKAAAAAAAAAAAAAAAAAAUKCgAAAAAAAAAAAAAAAAAFCgoAAAAAAAAAAAAAAAAABQoKAAAAAAAAAAAAAAAAAAUKCgAAAAAAAAAAAAAAAAAFCgoAAAAAAAAAAAAAAAAABQoKAAAAAAAAAAAAAAAAAAUKCgAAAAAAAAAAAAAAAAAFCgoAAAAAAAAAAAAAAAAABQoKAAAAAAAAAAAAAAAAAAUKCgAAAAAAAAAAAAAAAAAFCgoAAAAAAAAAAAAAAAAFCgoKBQAAAAAAAAAAAAAAAAtLQAAAAAAAAAAAAAAAAAALS0AAAAAAAAAAAAAAAAAAC0tAAAAAAAAAAAAAAAAAAAtLQAAAAAAAAAAAAAAAAAALS0AAAAAAAAAAAAAAAAAAC0tAAAAAAAAAAAAAAAAAAAtLQAAAAAAAAAAAAAAAAAALS0AAAAAAAAAAAAAAAAAAC0tAAAAAAAAAAAAAAAAAAAtLQAAAAAAAAAAAAAAAAAALS0AAAAAAAAAAAAAAAAAAC0tAAAAAAAAAAAAAAAAAAAtLQAAAAAAAAAAAAAAAAAALS0AAAAAAAAAAAAAAAAAAC0tAAAAAAAAAAAAAAAAAAAtLQAAAAAAAAA=',
+    'm': 'AAAAAAAAAAAAAAAAAAAAAB4AAAAAAAAPHgAAAAAAAAAeHgAAAAAAHh4AAAAAHh4AHh4AAAAAHg8eAAAAHh4eDx4eAAAAAB4AHgAAAB4AAA8eHgAAAB4eAB4AAB4eAAAeHh4AAAAeAAAeAAAeAAAAHh4eAAAeDwAAHgAPDwAAABYeHgAAHgAAAB4eHgAAAAAPHh4AHgAAAAAeHh4AAAAADwAeAB4AAAAAHh4AAAAAAA8AHh4eAAAAAB4eAAAAAAAPAB4eAAAAAAAeHgAAAAAADwAeHgAAAAAAHh4AAAAAAA8AHg8AAAAAAA8AAAAAAAAPAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAnAAAAAAAAAAAAAAAAAAAAJxMAABMnCgAAAB0nHQAAACcTABMnHRMAABMdEycAABMnABMnChMTAAAnCgAnEwAnJwAnAAATJwATEwAAJxMAJycTHQAAEycAHQoAACcTACcnJwoAABMnEx0AAAATHQAnJx0AAAAKJycKAAAACicdJycKAAAAABMAAAAAAAATCgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABcXAAAXCwAAAAsLAAAAAAAtFwAiLRcAAAstLQAAAAAALRcXIgstAAAtCyIXAAAAAC0ALQsALQAtIgAXFwAACxctIhcAAC0iLQAAFy0ACyItLSIAAAAtLQAAAAAtLS0LAC0LAAAACwsAAAAACxcLAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGhoAABoaGgAAGhoaAAAAGhoaABoaGhoaDRoaGhoAABoaGhMaGhMaGhoaDRMaGgAaGhoaGgANGhoNAAANGhoAGhoaGgAADRoaAAAAABoaABoaGgYAAA0aGgAAAAAaGg0aGhoAAAAAGhoAAAAAGhoNGhoaAAAAABoaDQAAABoaDRoaGgAAAAAaGg0AAAAaGg0aGhoAAAAAGhoNAAAAGhoNGhoaAAAAABoaDQAAAAAaGgANDQAAAAAaGg0AAAAADQYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACEhISEAACEhAAAAACEhIQAAACEhACEhISEAACEhISEAAAAhIQAhABAhACEAACEhAAAAISEhAAAQISEhAAAAIQAAACEhIQAAECEhAAAAISEAAAAhIQAAABAhIQAAACEhAAAAISEAAAAQIQAAAAAhIQAAACEhAAAAECEAAAAAISEAAAAhEAAAABAhAAAAABAhEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB0dAA8dHR0PAAAAHR0dAAAdHR0dHR0dHQ8WHR0dHR0PHR0dDwAAAB0dHR0AAA8dHR0dDwAAAAAWHQ8AAAAAHR0dHQAAAAAADx0PAAAAAB0dHR0AAAAAAA8dDwAAAAAdHR0dAAAAAAAPHQ8AAAAAHR0dHQAAAAAADx0PAAAAAB0dHR0AAAAAAA8dDwAAAAAdHR0dAAAAAAAPHQ8AAAAAHR0dHQAAAAAADx0PAAAAAB0dAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIiIiEQAiIiIAABEiIiIAAAAZIhkREREiGRERERkiEQAAESIRAAAAESIAAAARIhEAABEiEQAAABEiAAAAACIiAAARIhEAAAARIgAAAAAiIgAAESIRAAAAESIAAAAAIiIAABEiEQAAABEiAAAAACIiAAARIhEAAAARIgAAAAAiIgAAESIRAAAAESIAAAAAIiIAERkiGREAESIiEQgRGSIiEQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGxsNAAAbGw0AAAAbGxsAABsbDRsbGxsbAAAbGxsbGw0bGxsbDQ0NGxsbFA0NFBsUGxsNAAAAAA0bGwAAAAAbGxsbDQAAAAANGxsAAAAAGxsbGw0AAAAADRsbAAAAABsbGxsNAAAAAA0bGwAAAAAbGxsbDQAAAAANGxsAAAAAGxsbGw0AAAAADRsbAAAAABsbGxsNAAAAAA0bGwAAAAAbGxsbDQAAAAANGxsAAAAAGxsbGw0AAAAADRsbAAAAABsbAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+    'n': 'AAAfHx8AAAAAAAAAAAAAAAAAHx8fAAAAAAAAAAAAAAAAAB8fHwAAAAAAHx8fAAAAAAAAAB8AAAAAAB8AHwAAAAAAAAAfAAAAAB8AAB8fAAAAAAAAHx8AAAAfAAAfHwAAAAAAAB8fAAAfAAAAHx8AAAAAAAAfHwAAHwAAAB8fAAAAAAAAHx8AHx8AAAAfHwAAAAAAAB8fAB8AAAAAHx8AAAAAAAAfHx8fAAAAAB8fAAAAAAAAHx8fAAAAAAAfHwAAAAAAAAAfHwAAAAAAHx8AAAAAAAAAHx8AAAAAAB8fAAAAAAAAAAAAAAAAAAAfHwAAAAAAAAAAAAAAAAAAHx8AAAAAAAAAAAAAAAAAAAAAAAAAABwcAAAAAAAAAAAAAAAAAAAcHAAAAAAAHBwAAAAAAAAcHBwAAAAcHBwcHAAAAAAAHBwcAAAAHBwcHBwAAAAAABwcHAAAHBwcAA4cHAAAAAAcHBwADhwcAAAOHBwAAAAAHBwcABUcAAAABxwcAAAAABwcAAAcAAAAAAAcHAAAAAAcHAAcHAAAAAAAHBwAAAAAHBwcHA4AAAAAABwcAAAAABwcHBwAAAAAAAAcHBwAAAAcHBwcAAAAAAAAHBwcHBwOHBwcAAAAAAAAAAAcHBwHAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAhIQAAAAAAAAAAAAAAAAAAISEAAAAAAAAAAAAAAAAAACEhAAAAAAAhIQAAAAAAAAAhIQAAACEhISEAAAAAAAAAISEAABEhISEhAAAAAAAAISERAAAhEREhIQAAAAAAACEhAAAhEQAAISEAAAAAAAAhISEhIQAAACEhAAAAAAAAISEhIQAAAAAhIREAAAAAESEhISEAAAAAACEhAAAAACEhIREAAAAAAAARGSEhISERAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFhYAAAAWFhYWFgAAAAAAABYWAAAAFhYWFhYAAAAAFhYWFgAAFhYWFhYWFgAAABYWFhYWFhYWFhYWFhYAAAAWFhYWFhYWFgAAFhYWAAAAFhYWFhYWFgAAABYWFgAAABYWFhYWFgAAAAAAFhYWAAAWFhYWFgAAAAAAABYWFgAAFhYWFhYAAAAAABYWFhYAABYWFhYAAAAAAAAWFhYWAAAWFhYWAAAAAAAAFhYWFgAAFhYWFgAAAAAAAAAWFhYAABYWFhYAAAAAAAAAFhYWAAAWFhYWAAAAAAAAABYWFgAAFhYWFgAAAAAAAAAWFhYAAAAAFhYAAAAAAAAAFhYWAAAAAAAAAAAAAAAAAAAAAAAcHBwcAAAAABwcHBwcHAAAHBwcHAAAAAAcHBwcHBwAAAAAABwAAAAcHBwcHBwcAAAAAAAcAAAAHAAAABwcHAAAAAAAHAAAHAAAAAAcHBwAAAAAABwAABwAAAAAHBwcAAAAAAAcHBwcAAAAABwcHAAAAAAAHBwcAAAAAAAcHBwAAAAAABwcHAAAAAAAHBwcAAAAAAAcHBwAAAAAABwcHAAAAAAcHAAAAAAAAAAcHBwAAAAAHBwAAAAAAAAAHBwcAAAAABwcAAAAAAAAABwcHBwcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGRkZAAAAGRkZGRkAAAAAABkZGQAZGRkZGRkZGQAAAAAZGRkZGRkZGRkZGRkNAAAAGRkZGRkAAAAAABkZGQAAABkZGRkAAAAAAAAAGRkAAAAZGRkAAAAAAAAAABkZAAAAGRkZAAAAAAAAAAAZGQAAABkZGQAAAAAAAAAAGRkAAAAZGRkAAAAAAAAAABkZAAAAGRkZAAAAAAAAAAAZGQAAABkZGQAAAAAAAAAAGRkAAAAZGRkAAAAAAAAAABkZAAAAGRkZAAAAAAAAAAAZGQAAABkZGQAAAAAAAAAAGRkAAAAZGRkAAAAAAAAAABkZAAAAGRkZAAAAAAAAAAAZGQAAGBgYGBgAAAAYGBgYAAAAAAAAGBgYABgYGBgYGBgAAAAAABgYGBgYAAAAABgYGAAAAAAYGBgYAAAAAAAYGBgAAAAAGBgYAAAAAAAAGBgYAAAAABgYGAAAAAAAABgYGAAAAAAYGBgAAAAAAAAYGBgAAAAAGBgYAAAAAAAAGBgYAAAAABgYGAAAAAAAABgYGAAAAAAYGBgAAAAAAAAYGBgAAAAAGBgYAAAAAAAAGBgYAAAAABgYGAAAAAAAABgYGAAAAAAYGBgAAAAAAAAYGBgAAAAAGBgYGAAAAAAAGBgYGAAYGBgYGBgYGAAYGBgYGBgYAAAAAAAAAAAAAAAAAAAAAAAYGBgAABgYGBgYAAAAAAAAGBgYGBgYGBgYGBgAAAAAABgYGBgYGBgYGBgYGAAAAAAYGBgYAAAAAAAYGBgAAAAAGBgYAAAAAAAAABgYGAAAABgYGAAAAAAAAAAYGBgAAAAYGBgAAAAAAAAAGBgYAAAAGBgYAAAAAAAAABgYGAAAABgYGAAAAAAAAAAYGBgAAAAYGBgAAAAAAAAAGBgYAAAAGBgYAAAAAAAAABgYGAAAABgYGAAAAAAAAAAYGBgAAAAYGBgAAAAAAAAAGBgYAAAAGBgYAAAAAAAAABgYGAAAABgYGAAAAAAAAAAYGBgAAAAYGBgAAAAAAAAAGBgYAAA=',
+    'o': 'AAAAAB4eHh4AAAAAAAAAAAAAAAAeHh4eAAAAAAAAAAAAAAAAHh4eAB4eAAAAAAAAAAAAHh4AAAAeHh4eAAAAAAAAAB4eAAAAAB4eHh4AAAAAAB4eAAAAAAAAAAAeHgAAAAAeHgAAAAAAAAAAHh4AAAAAHh4AAAAAAAAAAB4eAAAAAB4AAAAAAAAAAAAAHh4AAAAeAAAAAAAAAAAAAB4AAAAAHgAAAAAAAAAAAB4eAAAAAB4AAAAAAAAAAAAeHgAAHh4eAAAAAAAAAAAAHh4AAAAAHgAAAAAAAAAeHh4AAAAAAB4eHgAAAB4eHh4AAAAAAAAAHh4eHh4eHgAAAAAAAAAAAAAAAAAaGhoaGgAAAAAAAAAAAAAaGhoaGhoaAAAAAAAAAAAaGhoaGhoaGg0AAAAAAAAaGhoaAAAAGhoaAAAAAAAaGhoAAAAAAAAaGgAAAAAAGhoaAAAAAAAAGhoAAAAAGhoaAAAAAAAAABoaAAAAABoaAAAAAAAAAAAaGgAAABoaGgAAAAAAAAAAGhoAAAAaGhoAAAAAAAAAABoaAAAAGhoaAAAAAAAAABoaDQAAABoaGgAAAAAAAAAaGg0AAAAaGhoAAAAAAAAaGhoAAAAAGhoaGgAAABoaGhoAAAAAAAAaGhoaGhoaGhoAAAAAAAAADQ0aGhoaDQ0AAAAAAAAAAAAAAAAAABoaGhoaGgAAAAAAAAAAAAAaGhoaGhoAAAAAAAAAABoaGhoaGhoaGgAAAAAAABoaGgAAAAAaGhoaAAAAABoaGgAAAAAAABoaGgAAABoaGgAAAAAAAAAAGhoAAAAaGgAAAAAAAAAAABoaAAAaGhoAAAAAAAAAAAAaGgAAGhoaAAAAAAAAAAAaGhoAABoaGgAAAAAAAAAAGhoaAAAaGgAAAAAAAAAAGhoaAAAAGhoAAAAAAAAAGhoaAAAaGhoaAAAAAAAAGhoaAAAAAAAaGhoAABoaGhoaAAAAAAAAGhoaGhoaGhoaAAAAAAAAAAAaGhoaGgAAAAAAAAAAAAAAAAAAABgYGBgYAAAAAAAAAAAAAAAYGBgYGAAAAAAAAAAAABgYGBgYGBgYAAAAAAAAABgYGBgYGBgYGBgAAAAAABgYGBgYAAAAGBgYGAAAAAAYGBgAAAAAAAAYGBgAAAAAGBgYAAAAAAAAGBgYAAAYGBgYAAAAAAAAABgYGAAAGBgYGAAAAAAAAAAYGBgAABgYGBgAAAAAAAAAGBgYAAAYGBgYAAAAAAAAABgYGAAAAAAYGBgAAAAAAAAYGBgAAAAAGBgYGAAAABgYGBgAAAAAAAAYGBgYGBgYGBgYAAAAAAAAABgYGBgYGBgYAAAAAAAAAAAAGBgYGBgAAAAAAAAAAAAAABkZGRkZGQAAAAAAAAAAAAAZGRkZGRkAAAAAAAAAGRkZAAAAAAAZGRkAAAAAABkZGQAAAAAAGRkZAAAAAAAZGQAAAAAAABkZGRkAABkZGRkAAAAAAAAAGRkZAAAZGRkZAAAAAAAAABkZGQAAGRkZGQAAAAAAAAAZGRkAABkZGRkAAAAAAAAAGRkZAAAZGRkZAAAAAAAAABkZGQAAGRkZGQAAAAAAAAAZGQAAABkZGRkAAAAAAAAAGRkAAAAZGRkZAAAAAAAAGRkZAAAAGRkZGRkAAAAAABkAAAAAABkZGRkZAAAAAAAZAAAAAAAAAAAAGRkZGRkZAAAAAAAAAAAAABgYGBgYGAAAAAAAAAAAGBgYGBgYGBgYGAAAAAAAGBgYGBgYGBgYGBgYAAAAABgYGBgAAAAAGBgYGAAAABgYGBgAAAAAAAAAGBgMAAAYGBgAAAAAAAAAABgYDAAAGBgYAAAAAAAAAAAAGAwAABgYGAAAAAAAAAAAABgYABgYGBgAAAAAAAAAAAAYGAAAGBgYAAAAAAAAAAAAGBgAABgYGAAAAAAAAAAAABgMAAAYGBgAAAAAAAAAABgYDAAAGBgYGAAAAAAAAAAYGAwAAAAYGBgYAAAAABgYGBgAAAAAGBgYGBgYGBgYGBgYAAAAAAAMDBgYGBgYGAwMAAAAAAAAAAAaGhoaGhoAAAAAAAAAAAAAGhoaGhoaAAAAAAAAAAAAGhoaAAAAGhoaAAAAAAAAGhoAAAAAAAAaGhoAAAAAGhoaAAAAAAAAGhoaAAAAABoaAAAAAAAAAAAaGhoAGhoaGgAAAAAAAAAAGhoaABoaGhoAAAAAAAAAABoaGgAaGhoaAAAAAAAAAAAaGhoAGhoaGgAAAAAAAAAAGhoaABoaGhoAAAAAAAAAABoaGgAAABoaAAAAAAAAAAAaGhoAAAAaGhoAAAAAAAAaGhoAAAAAABoaGgAAAAAAGhoaAAAAAAAAGhoaAAAaGhoAAAAAAAAAAAAaGhoaGhoAAAAAAAAAAAAAGBgYGBgYAAAAAAAAAAAYGBgYGBgYGBgYAAAAAAAYGBgYGAAAGBgYGBgAAAAAGBgYAAAAAAAAGBgYAAAAGBgYAAAAAAAAAAAYGBgAABgYGAAAAAAAAAAAGBgYAAAYGBgAAAAAAAAAABgYGAAAGBgYAAAAAAAAAAAYGBgAABgYGAAAAAAAAAAAGBgYAAAYGBgAAAAAAAAAABgYGAAAGBgYAAAAAAAAAAAYGBgAABgYGAAAAAAAAAAAGBgYAAAAGBgYAAAAAAAAGBgYAAAAABgYGBgYAAAYGBgYGAAAAAAAGBgYGBgYGBgYGAAAAAAAAAAAGBgYGBgYAAAAAAA=',
+    'p': 'AAAvLy8YAAAAAAAAAAAAAAAAAC8vLy8vAAAAAAAAAAAAAAAAABgALy8vAAAAAAAAAAAAAAAYAAAADBgvDAAAAAAAAAAAGAAAAAAAAC8AAAAAAAAAABgAAAAAAAAYAAAAAAAAAAAYAAAAAAAAGAAAAAAAAAAAGAAAAAAYGCMAAAAAAAAvLy8vLy8vAAAAAAAAAAAALy8vLwAAAAAAAAAAAAAAAAAAGAAAAAAAAAAAAAAAAAAAABgAAAAAAAAAAAAAAAAAAAAYAAAAAAAAAAAAAAAAAAAAGAAAAAAAAAAAAAAAAAAAABgAAAAAAAAAAAAAAAAAAAAYAAAAAAAAAAAAAAAAAAAAIQAAAAAAISEAAAAAAAAAESEAAAAZISEhIQAAAAAAACEhAAAhISEAISEAAAAAAAAhIQAZIQgAAAAhAAAAAAAAISEhIQAAAAAhIQAAAAAAACEhIQgAAAAIIRkAAAAAAAAhISEAAAAAESERAAAAAAAAISEAAAAAESERAAAAAAAAACEhIRERISEIAAAAAAAAABEhESEhISEAAAAAAAAAAAARIQgREREAAAAAAAAAAAAAESEAAAAAAAAAAAAAAAAAABkhAAAAAAAAAAAAAAAAAAAhIQAAAAAAAAAAAAAAAAAAIREAAAAAAAAAAAAAAAAAESEAAAAAAAAAAAAAAAAAAAAAABIAAAAAJCQSAAAAAAAAACQkAAAAGxIbJAAAAAAAAAAkJAAAJBIAACQAAAAAAAAAJCQAGxIAAAkkAAAAAAAAACQkABIAAAASJAAAAAAAAAAkGyQJAAAAGxIAAAAAAAAAJCQkAAAAJCQAAAAAAAAACSQkAAAAEiQJAAAAAAAAABIkJAAAJCQAAAAAAAAAAAASJCQkJBIJAAAAAAAAAAAAEiQAAAAAAAAAAAAAAAAAACQkAAAAAAAAAAAAAAAAAAAkJAAAAAAAAAAAAAAAAAAAJBIAAAAAAAAAAAAAAAAAJCQAAAAAAAAAAAAAAAAAABIkAAAAAAAAAAAAAAAAAAAAACIRAAAAAAAAAAAAAAAAAAAiIhEZIiIRAAAAAAAAAAAAIiIiIiIiIhEAAAAAAAAAACIiIggAESIRAAAAAAAAAAAiIgAAAAARIgAAAAAAAAAAIiIAAAAAESIAAAAAAAAAACIiAAAAABEiAAAAAAAAAAAiIgAAAAAZIgAAAAAAAAAAIiIAAAARIhEAAAAAAAAAACIiIiIiIiIAAAAAAAAAAAAiIiIiIiIIAAAAAAAAAAAAIiIAAAAAAAAAAAAAAAAAACIiAAAAAAAAAAAAAAAAAAAiIgAAAAAAAAAAAAAAAAAAIiIAAAAAAAAAAAAAAAAAACIZAAAAAAAAAAAAAAAAACQkJCQAAAAkJBIAAAAAAAAAACQkAAAkJCQkAAAAAAAAAAAkJAAkJAAAJAAAAAAAAAAAJCQkJAAAACQAAAAAAAAAACQkJAAAAAASAAAAAAAAAAAkJAAAAAAAJAAAAAAAAAAAJCQAAAAAACQAAAAAAAAAACQkAAAAAAASAAAAAAAAAAAkJAAAAAAkEgAAAAAAAAAAJCQkJCQkAAAAAAAAAAAAACQAAAAAAAAAAAAAAAAAAAAkAAAAAAAAAAAAAAAAAAAAJAAAAAAAAAAAAAAAAAAAACQAAAAAAAAAAAAAAAAAACQkAAAAAAAAAAAAAAAAAAAkJAAAAAAAAAAAAAAAAAAeHgAAHh4eDwAAAAAAAAAAHh4AHh4eHh4eAAAAAAAAAB4eHh4PDw8eHg8AAAAAAAAeHh4AAAAADx4PAAAAAAAAHh4AAAAAAAAeHgAAAAAAAB4eAAAAAAAAHh4AAAAAAAAeHgAAAAAAAB4eAAAAAAAAHh4AAAAAAAAeHgAAAAAAAB4eAAAAAAAPHh4AAAAAAAAeHg8AAAAPFh4PAAAAAAAAHh4eHh4eHh4eAAAAAAAAAB4eDxYeHh4PAAAAAAAAAAAeHgAAAAAAAAAAAAAAAAAAHh4AAAAAAAAAAAAAAAAAAB4eAAAAAAAAAAAAAAAAAAAeHgAAAAAAAAAAAAAAAAAfHx8fABAfHx8AAAAAAAAAAAAfHx8fAB8fHwAAAAAAAAAAHx8QAAAACB8fCAAAAAAAAB8fAAAAAAAfHxAAAAAAAAAfHwAAAAAAHx8QAAAAAAAAHx8AAAAAAB8fHwAAAAAAAB8fAAAAAAAfHx8AAAAAAAAfHwAAAAAAHx8QAAAAAAAAHx8AAAAAAB8fEAAAAAAAAB8fHwAAABAfHwAAAAAAAAAfHxAXEBAXEAAAAAAAAAAAHx8AAAAAAAAAAAAAAAAAAB8fAAAAAAAAAAAAAAAAAAAfHwAAAAAAAAAAAAAAAAAAHx8AAAAAAAAAAAAAAAAQEB8fHxAAAAAAAAAAAAAAAB4eDwAeHh4PAAAAAAAAAAAeHh4eHh4eHh4AAAAAAAAAHh4eDw8PDx4eCAAAAAAAAB4eDwAAAAAPHg8AAAAAAAAeHg8AAAAADx4PAAAAAAAAHh4PAAAAAAAeHgAAAAAAAB4eDwAAAAAAHh4AAAAAAAAeHg8AAAAACB4PAAAAAAAAHh4PAAAAAA8eDwAAAAAAAB4eDwAAAAAeHgAAAAAAAAAeHh4eDx4eHg8AAAAAAAAAHh4PHh4eHgAAAAAAAAAAAB4eDwAAAAAAAAAAAAAAAAAeHg8AAAAAAAAAAAAAAAAAHh4PAAAAAAAAAAAAAAAAAB4eDwAAAAAAAAAAAAA=',
+    'q': 'AAAAAAAAAAAAAAAWAAAAAAAAAAAAAAAAAAAAFgAAAAAAAAAAAAAAAAAAABYAAAAAAAAAAAAAABYhLBYWAAAAAAAAAAAAACwsAAAsFgAAAAAAAAAAABYsAAAALBYAAAAAAAAAABYhAAAAFiwWAAAAAAAAAAAsAAAAACwAFgAAAAAAAAAsLAAAABYsABYAAAAAAAAALBYAAAAhAAAWAAAAAAAAACwsAAAsFgAAFgAAAAAAAAAsLCwsLAAAACwAAAAAAAAAABYWFgAAAAAsAAAAAAAAAAAAAAAAAAAALAAAAAAAAAAAAAAAAAAAACwAAAAAAAAAAAAAAAAAAAAsAAAAAAAAAAAAAAAAJCQSAAAAAAAAAAAAAAASJCQkJAkAAAAAAAAAAAASJCQAACQkAAAAAAAAAAAAJCQJAAASEgAAAAAAAAAAGxsAAAAAJBIAAAAAAAAAACQAAAAAACQSAAAAAAAAACQbAAAACSQkAAAAAAAAAAAkEgAACSQkJAAAAAAAAAAAJCQAJCQSJCQAAAAAAAAAACQkJCQbACQSAAAAAAAAAAAAJCQAAAAkEgAAAAAAAAAAAAAAAAASJBIAAAAAAAAAAAAAAAAAEiQSAAAAAAAAAAAAAAAAABIkAAAAAAAAAAAAAAAAAAAkJAAAAAAAAAAAAAAAAAAAGyQAAAAAAAAAAAAAAAAAAAAlJSUAAAAAAAAAAAAAAAAlJSUlAAAAAAAAAAAAABIlEhIAJSUAAAAAAAAAABIlEgAAACUlAAAAAAAAAAAbEgAAAAAlEgAAAAAAAAAAJQAAAAAAJRIAAAAAAAAAJRIAAAAAGyUJAAAAAAAAJSUSAAAAJSUlAAAAAAAAACUlAAAAJSUSJQAAAAAAAAASJRsSGxIAJQAAAAAAAAAAACUlJQAAACUAAAAAAAAAAAAAAAAAACUbAAAAAAAAAAAAAAAAAAAlEgAAAAAAAAAAAAAAAAAlJQkAAAAAAAAAAAAAAAAAJSUAAAAAAAAAAAAAAAAACSUlAAAAAAAAAAAAAAAAABAhISEhAAAAAAAAAAAAACEhISEhIQAAAAAAAAAAABghIRAQISEAAAAAAAAAACEhIQAAACEhAAAAAAAAAAAhIQAAAAAhIQAAAAAAAAAhIRAAAAAAISEAAAAAAAAAISEQAAAAACEhAAAAAAAAACEhEAAAAAAhIQAAAAAAAAAhISEAAAAQISEAAAAAAAAAACEhIRAQGCEQAAAAAAAAAAAAECEhISEhEAAAAAAAAAAAAAAQEBAYIRAAAAAAAAAAAAAAAAAAECEQAAAAAAAAAAAAAAAAABAhEAAAAAAAAAAAAAAAAAAQIRAAAAAAAAAAAAAAAAAAECEIAAAAAAAAAAAAAAAiIiIiIhEAAAAAAAAAACIiAAAAIiIRAAAAAAAAACIiAAAAAAAiEQAAAAAAAAAiAAAAAAAiIgAAAAAAAAAiIgAAAAAAIiIAAAAAAAAAIiIAAAAAACIiAAAAAAAAACIiAAAAACIiIgAAAAAAAAAiIgAAACIAACIAAAAAAAAAACIiIiIiACIiAAAAAAAAAAAiIiIAAAAiIgAAAAAAAAAAAAAAAAAAIiIAAAAAAAAAAAAAAAAAACIiAAAAAAAAAAAAAAAAAAAiIgAAAAAAAAAAAAAAAAAAIiIAAAAAAAAAAAAAAAAAACIiAAAAAAAAAAAAAAAAAAARIhEAAAAAAAAAAAAPHh4eDx4eAAAAAAAAAAAeHh4eHh4eHgAAAAAAAAAPHh4PDw8XHh4AAAAAAAAAHh4PAAAAAB4eAAAAAAAAAB4eAAAAAAAeHgAAAAAAAB4eAAAAAAAAHh4AAAAAAAAeHgAAAAAAAB4eAAAAAAAAHh4AAAAAAAAeHgAAAAAAAAAeHgAAAAAAHh4AAAAAAAAAHh4IAAAADx4eAAAAAAAAAA8eHh4eHh4eHgAAAAAAAAAADx4eHh4PHh4AAAAAAAAAAAAAAAAAAB4eAAAAAAAAAAAAAAAAAAAeHgAAAAAAAAAAAAAAAAAAHh4AAAAAAAAAAAAAAAAAAB4eAAAAAAAAAAAAICAgIAAAIAAAAAAAAAAQICAAACAgICAAAAAAAAAAIBAAAAAAGCAgAAAAAAAAICAAAAAAABAgIAAAAAAAACAgAAAAAAAQICAAAAAAABAgIAAAAAAAECAgAAAAAAAAICAAAAAAABAgIAAAAAAAACAgAAAAAAAQICAAAAAAAAAgIAAAAAAAECAgAAAAAAAAACAgAAAAABAgIAAAAAAAAAAIECAYEBAYICAAAAAAAAAAAAAAAAAAECAgAAAAAAAAAAAAAAAAABAgIAAAAAAAAAAAAAAAAAAQICAAAAAAAAAAAAAAAAAAECAgAAAAAAAAAAAAAAAAEBggIBgAAAAAAAAAAB4eHh4AHh4AAAAAAAAAAB4eHh4eHh4eAAAAAAAAAB4eDwcADw8eHgAAAAAAAB4eDwAAAAAAHh4AAAAAAAAeHg8AAAAAAB4eAAAAAAAAHh4PAAAAAAAeHgAAAAAAAB4eDwAAAAAAHh4AAAAAAAAeHg8AAAAAAB4eAAAAAAAAHh4PAAAAAAAeHgAAAAAAAB4eHgAAAAAeHh4AAAAAAAAADx4eHh4eHh4eAAAAAAAAAAAPHh4eHgAeHgAAAAAAAAAAAAAAAAAAHh4AAAAAAAAAAAAAAAAAAB4eAAAAAAAAAAAAAAAAAAAeHgAAAAAAAAAAAAAAAAAAHh4AAAA=',
+    'r': 'AAAAAAAAAAAAIyMAAAAAAAAAAAAAAAAAACMjAAAAAAAAACMjAAAAACMjIyMAAAAAAAAjIwAAACMjAAAjIwAAAAAAIyMAACMjAAAAAAAAAAAAACMjAAAjAAAAAAAAAAAAAAAjIwAjIwAAAAAAAAAAAAAAIyMjIwAAAAAAAAAAAAAAACMjIwAAAAAAAAAAAAAAAAAjIyMAAAAAAAAAAAAAAAAAIyMjAAAAAAAAAAAAAAAAACMjAAAAAAAAAAAAAAAAAAAjIwAAAAAAAAAAAAAAAAAAIyMjAAAAAAAAAAAAAAAAACMjIwAAAAAAAAAAAAAAAAAjIyMAAAAAAAAAAAAAAAAAHR0AAAAAAAAdHR0OAAAAAB0dAAAAAAAdHR0dDgAAAB0dHQAAAAAdHR0dHR0AAAAdHR0AAAAdHR0AAB0dAAAAHR0dAAAdHR0AAAAAAAAAAB0dHQAdHR0AAAAAAAAAAAAdHQAAHR0AAAAAAAAAAAAAHR0AHR0dAAAAAAAAAAAAAB0dHR0dAAAAAAAAAAAAAAAdHR0dHQAAAAAAAAAAAAAAHR0dHQAAAAAAAAAAAAAAAB0dHR0AAAAAAAAAAAAAAAAdHR0AAAAAAAAAAAAAAAAAHR0dAAAAAAAAAAAAAAAAAB0dHQAAAAAAAAAAAAAAAAAdHQ4AAAAAAAAAAAAAAAAAAAAbGwAAAAAAABsbGwAAAAAAGxsAAAAAAAAbGxsAAAAAABsbGwAAABsbGxsbGwAAAAAbGwAAABsbGwAAGxsAABsbGxsAAAAbGwAAAAAAAAAbGxsbAAAbGwAAAAAAAAAAGxsbGwAbGwAAAAAAAAAAABsbGxsAGxsAAAAAAAAAAAAbGxsbGxsAAAAAAAAAAAAAGxsbGxsbAAAAAAAAAAAAABsbGxsbAAAAAAAAAAAAAAAbGxsbGwAAAAAAAAAAAAAAGxsbGwAAAAAAAAAAAAAAABsbGxsAAAAAAAAAAAAAAAAbGxsbAAAAAAAAAAAAAAAAAAAbGwAAAAAAAAAAAAAAAAAaGhoAAAAAGhoaGgAAAAAAGhoaAAAAABoaGhoAAAAAABoaGhoAGhoaGhoaGgAAAAAaGhoaGhoaGhoaGhoAAAAAGhoaGhoaGgAAGhoaAAAAABoaGhoaAAAAAAAaGgAAAAAaGhoaAAAAAAAAGhoAAAAAGhoaGgAAAAAAAAAAAAAAABoaGhoAAAAAAAAAAAAAAAAaGhoaAAAAAAAAAAAAAAAAGhoaGgAAAAAAAAAAAAAAABoaGhoAAAAAAAAAAAAAAAAaGhoaAAAAAAAAAAAAAAAAGhoaGgAAAAAAAAAAAAAAABoaGhoAAAAAAAAAAAAAAAAaGhoAAAAAAAAAAAAAAAAeHh4eHgAAAAAAHh4eHgAAHh4eHh4AAAAAAB4eHh4AAAAAAAAeAAAAHh4eHh4eAAAAAAAAHgAAAB4eHh4eHgAAAAAAAB4AAB4eHgAAAAAAAAAAAAAeHh4eAAAAAAAAAAAAAAAAHh4eHgAAAAAAAAAAAAAAAB4eHh4AAAAAAAAAAAAAAAAeHh4AAAAAAAAAAAAAAAAAHh4eAAAAAAAAAAAAAAAAAB4eHgAAAAAAAAAAAAAAAAAeHh4AAAAAAAAAAAAAAB4eHh4eAAAAAAAAAAAAAAAeHh4AAAAAAAAAAAAAAAAAHh4eAAAAAAAAAAAAAAAAAB4eHgAAAAAAAAAAAAAAAAAfHx8AAAAfHx8QAAAAAAAAHx8fAB8fHx8fHwAAAAAAAB8fHx8fHx8fHx8AAAAAAAAfHx8fHwAAAAAAAAAAAAAAHx8fHwAAAAAAAAAAAAAAAB8fHwAAAAAAAAAAAAAAAAAfHx8AAAAAAAAAAAAAAAAAHx8fAAAAAAAAAAAAAAAAAB8fHwAAAAAAAAAAAAAAAAAfHx8AAAAAAAAAAAAAAAAAHx8fAAAAAAAAAAAAAAAAAB8fHwAAAAAAAAAAAAAAAAAfHx8AAAAAAAAAAAAAAAAAHx8fAAAAAAAAAAAAAAAAAB8fHwAAAAAAAAAAAAAAAAAfHx8AAAAAAAAAAAAAAAAdHR0dHR0AAB0dHQAAAAAAHR0dHR0dAAAdHR0AAAAAAAAAHR0dHR0dHR0dHQAAAAAAAAAdHR0dAAAdHR0AAAAAAAAAHR0dAAAAHR0dAAAAAAAAAB0dHQAAAAAAAAAAAAAAAAAdHR0AAAAAAAAAAAAAAAAAHR0dAAAAAAAAAAAAAAAAAB0dHQAAAAAAAAAAAAAAAAAdHR0AAAAAAAAAAAAAAAAAHR0dAAAAAAAAAAAAAAAAAB0dHQAAAAAAAAAAAAAAAAAdHR0AAAAAAAAAAAAAAAAAHR0dAAAAAAAAAAAAAAAAAB0dHQAAAAAAAAAAAAAdHR0dHR0dHR0AAAAAAAAAACAgIAAAACAgIAAAAAAAAAAgICAAICAgICAAAAAAAAAAICAgICAgICAgAAAAAAAAACAgICAgAAAAAAAAAAAAAAAgICAgAAAAAAAAAAAAAAAAICAgAAAAAAAAAAAAAAAAACAgIAAAAAAAAAAAAAAAAAAgICAAAAAAAAAAAAAAAAAAICAgAAAAAAAAAAAAAAAAACAgIAAAAAAAAAAAAAAAAAAgICAAAAAAAAAAAAAAAAAAICAgAAAAAAAAAAAAAAAAACAgIAAAAAAAAAAAAAAAAAAgICAAAAAAAAAAAAAAAAAAICAgAAAAAAAAAAAAAAAAACAgIAAAAAAAAAAAAAA=',
+    's': 'AAAAAAAAAAAAJSUAAAAAAAAAAAAAACUlJSUlAAAAAAAAAAAAJSUlAAAAAAAAAAAAAAAAJSUAAAAAAAAAAAAAAAAAACUAAAAAAAAAAAAAAAAAACUlAAAAAAAAAAAAAAAAAAAAJSUAAAAAAAAAAAAAAAAAAAAlJSUlJQAAAAAAAAAAAAAAAAAAACUlJSUAAAAAAAAAAAAAAAAAAAAlJQAAAAAAAAAAAAAAAAAAACUlAAAAAAAAAAAAAAAAAAAlJQAAAAAAAAAAAAAAAAAAJQAAAAAAAAAAAAAAAAAlJSUAAAAAAAAAJSUlJSUlJQAAAAAAAAAAACUlJSUlAAAAAAAAAAAAAAAAAAAAAB8fHw8AAAAAAAAAAAAAHx8fHx8fAAAAAAAAAAAAHx8fHx8fDwAAAAAAAAAAHx8fHx8AAAAAAAAAAAAAHx8fHwAAAAAAAAAAAAAAAB8fHwAAAAAAAAAAAAAAAAAfHwAAAAAAAAAAAAAAAAAADx8fDw8AAAAAAAAAAAAAAAAAHx8fHx8AAAAAAAAAAAAAAAAAHx8fHwAAAAAAAAAAAAAAAAAfHx8PAAAAAAAAAAAAAAAAAAAfHwAAAAAAAAAAAAAAAAAAHx8AAAAAAAAAAAAAAAAfHx8PAAAAAAAfHx8fHx8fHx8fAAAAAAAADx8fHx8fDw8PAAAAAAAAAAAAAAAAACgoAAAAAAAAAAAAAAAAACgoKAAAAAAAAAAAAAAAACgoKCgAAAAAAAAAAAAAACgoKCgAAAAAAAAAAAAAAAAoKAAAAAAAAAAAAAAAAAAAKCgAAAAAAAAAAAAAAAAAACgoKAAAAAAAAAAAAAAAAAAUKCgoFAAAAAAAAAAAAAAAAAAAKCgUAAAAAAAAAAAAAAAAAAAoKAAAAAAAAAAAAAAAAAAAACgAAAAAAAAAAAAAAAAAAAAoAAAAAAAAAAAAAAAAAAAoKAAAAAAAAAAAAAAAAAAoKBQAAAAAAAAAAAAAACgoKCgUAAAAAAAAAAAAABQoFBQAAAAAAAAAAAAAAAAAAAAAABkZGQAAAAAAAAAAAAAZGRkZGRkZAAAAAAAAGRkZGRkZGRkZGQAAAAAAGRkZGRkZAAAZGRkAAAAAABkZGRkAAAAAABkZAAAAAAAZGRkAAAAAAAAAAAAAAAAAGRkZGRkAAAAAAAAAAAAAABkZGRkZGRkZAAAAAAAAAAAAABkZGRkZGRkAAAAAAAAAAAAAAAAAGRkZGQAAAAAAAAAAAAAAAAAZGRkZAAAAAAAAAAAAAAAAABkZGQAAAAAZGQAAAAAAABkZGRkAAAAZGRkZGRkZGRkZGRkAAAAAABkZGRkZGRkZGRkZAAAAAAAAABkZGRkZGRkAAAAAAAAAAAAAABoaGhoaGhoAAAAAAAAAAAAaGhoaGhoaAAAAAAAAGhoaAAAAAAAaGhoAAAAAABoaGgAAAAAAGhoaAAAAAAAaGgAAAAAAABoaGgAAAAAAGhoaAAAAAAAAAAAAAAAAABoaGgAAAAAAAAAAAAAAAAAAABoaGhoaAAAAAAAAAAAAAAAAGhoaGhoaGgAAAAAAAAAAABoaGhoaGhoAAAAAAAAAAAAAAAAAGhoaGgAAAAAAAAAAAAAAABoaGhoAAAAAABoaAAAAAAAAGhoaAAAAGhoaGhoAAAAAABoaGgAAABoaGhoaAAAAAAAaGhoAAAAAABoaGhoaGhoaAAAAAAAAAAAAAAAaGhoaGhoAAAAAAAAAABoaGhoaGhoaGg0AAAAAABoaGhoaGhoaGhoNAAAAABoaGhoAAAAAAAAaDQAAAAAaGhoAAAAAAAAAAAAAAAAAGhoaAAAAAAAAAAAAAAAAABoaGhoAAAAAAAAAAAAAAAAAGhoaGhoaGgAAAAAAAAAAAAAaGhoaGhoaGhoAAAAAAAAAAAAAGhoaGhoaDQAAAAAAAAAAAAAAAAAaGhoAAAAAAAAAAAAAAAAAABoaAAAAAAAAAAAAAAAAAAAaGgAAAAAaGgAAAAAAAAAaGg0AAAAAGhoaGhoaGhoaGhoNAAAAAA0NGhoaGhoaGg0NAAAAAAAAAAAbGxsbGxsbAAAAAAAAAAAAGxsbGxsbGwAAAAAAAAAAGxsAAAAbGxsbAAAAAAAbGxsAAAAAABsbGwAAAAAAGxsbAAAAAAAAGxsAAAAAABsbGxsAAAAAABsbAAAAAAAbGxsbGwAAAAAAAAAAAAAAAAAbGxsbGxsAAAAAAAAAAAAAABsbGxsbGxsAAAAAAAAAAAAAABsbGxsbGwAAAAAAAAAAAAAAAAAbGxsAAAAAABsbAAAAAAAAABsbAAAAAAAbGwAAAAAAAAAbGwAAAAAAGxsbAAAAAAAAGxsAAAAAABsbGxsbAAAAGxsAAAAAAAAbGwAbGxsbGxsAAAAAAAAAAAAAGhoaGhoaGgAAAAAAAAAAGhoaGhoaGhoaGgAAAAAAGhoaGgAAABoaGhoAAAAAABoaGgAAAAAAAAAAAAAAABoaGgAAAAAAAAAAAAAAAAAaGhoaAAAAAAAAAAAAAAAAABoaGhoaAAAAAAAAAAAAAAAaGhoaGhoaGhoAAAAAAAAAAAAaGhoaGhoaGgAAAAAAAAAAAAAAABoaGhoaAAAAAAAAAAAAAAAAABoaGgAAAAAAAAAAAAAAAAAaGhoAAAAAGgAAAAAAAAAAGhoaAAAAABoaGhoaAAAaGhoaGgAAAAAaGhoaGhoaGhoaGgAAAAAAAAAaGhoaGhoaAAAAAAA=',
+    't': 'AAAAAAAAABoAAAAAAAAAAAAAAAAAAAAaAAAAAAAAAAAAAAAAAAAAGgAAAAAAAAAAAAAAAAAAABoAAAAAAAAAAAAAAAAAAAAaAAAAAAAAAAAAAAAAAAAAGgAAAAAaGgAAAAAAAAAAADQ0NDQ0NDQAAAAANDQ0NDQ0NAAAAAAAAAAAADQ0NAAAGgAAAAAAAAAAAAAAAAAAABoAAAAAAAAAAAAAAAAAAAAaAAAAAAAAAAAAAAAAAAAAGgAAAAAAAAAAAAAAAAAAABoAAAAAAAAAAAAAAAAAAAAaNAAAAAAAAAAAAAAAAAAAGjQAAAAAAAAAAAAAAAAAABo0AAAAAAAAAAAAAAAAAAATJwAAAAAAAAAAAAAAAAAAEycAAAAAAAAAAAAAAAAAACcnAAAAAAAAAAAAAAAAAAAnAAAAAAAAAAAAAAAAAAAAJwAAAAAAAAAAAAAAExMTJycnJycnHQAAAAAAACcnJycnAAAAAAAAAAAAAAATEx0nEwAAAAAAAAAAAAAAAAATJwAAAAAAAAAAAAAAAAAAEycAAAAAAAAAAAAAAAAAAB0nAAAAAAAAAAAAAAAAAAAnJwAAAAAAAAAAAAAAAAAAJycAAAATJwAAAAAAAAAAACcnAAATJxMAAAAAAAAAAAAnJycnJxMAAAAAAAAAAAAAHScnJxMAAAAAAAAAAAAAAAAAJwAAAAAAAAAAAAAAAAAAACcAAAAAAAAAAAAAAAAAAAAnAAAAAAAAAAAAAAAAAAAnHQAAAAAAAAAAAAAAAAAAJxMAAAAAAAAAAAAAAAAAJycTJycnJycAAAAAACcnJycnJxMTExMTAAAAAAAAABMnJwAAAAAAAAAAAAAAAAATJycAAAAAAAAAAAAAAAAAEycAAAAAAAAAAAAAAAAAACcnAAAAAAAAAAAAAAAAAAAnJwAAAAAAAAAAAAAAAAAAJycAAAAAEwAAAAAAAAAAACcnAAAAJxMAAAAAAAAAAAAnJwATJycTAAAAAAAAAAAAEycnJxMAAAAAAAAAAAAAAAAAABEiAAAAAAAAAAAAAAAAAAAiIgAAAAAAAAAAAAAAAAAAIiIAAAAAAAAAAAAAAAAAACIiAAAAAAAAAAAAACIiIiIiIiIiIiIAAAAAAAAiIiIiIiIiIiIiAAAAAAAAACIiIiIiIiIiIgAAAAAAAAAAAAAiIiIAAAAAAAAAAAAAAAAAESIiAAAAAAAAAAAAAAAAABEiIgAAAAAAAAAAAAAAAAARIiIAAAAAAAAAAAAAAAAAESIiAAAAAAAAAAAAAAAAABEiIgAAAAAAAAAAAAAAAAARIiIAAAAAAAAAAAAAAAAAESIiAAAAAAAAAAAAAAAAABEiEQAAAAAAAAAAAAAAAAApKQAAAAAAAAAAAAAAAAAAKSkAAAAAAAAAAAAAAAAAACkpAAAAAAAAAAAAAAAAAAApKQAAAAAAAAAAAAAAAAAAKQAAAAAAAAAAAAAAAAAAKSkAAAAAAAAAAAAAAAAAKSkpKSkpAAAAAAAAAAAAAAApKQAAAAAAAAAAAAAAAAAAKSkAAAAAAAAAAAAAAAAAACkpAAAAAAAAAAAAAAAAAAApKQAAAAAAAAAAAAAAAAAAKSkAAAAAAAAAAAAAAAAAACkpAAAAAAAAAAAAAAAAAAApKQAAAAAAAAAAAAAAAAAAKSkpAAAAAAAAAAAAAAAAAAApKSkpAAAAAAAAAAAAAAAqAAAAAAAAAAAAAAAAAAAAKgAAAAAAAAAAAAAAAAAAACoAAAAAAAAAAAAAAAAAAAAqAAAAAAAAAAAAAAAAACoqKioqKioAAAAAAAAAAAAqKioqKioqAAAAAAAAAAAAAAAqAAAAAAAAAAAAAAAAAAAAKgAAAAAAAAAAAAAAAAAAACoAAAAAAAAAAAAAAAAAAAAqAAAAAAAAAAAAAAAAAAAAKgAAAAAAAAAAAAAAAAAAACoAAAAAAAAAAAAAAAAAAAAqAAAAAAAAAAAAAAAAAAAAKioAAAsAAAAAAAAAAAAAACoqKioqAAAAAAAAAAAAAAALKioqKgAAAAAAAAAAAAAAADIAAAAAAAAAAAAAAAAAAAAyAAAAAAAAAAAAAAAAAAAAMgAAAAAAAAAAAAAAAAAAADIAAAAAAAAAAAAAAAAyMjIyMjIyGQAAAAAAAAAAAAAAMgAAAAAAAAAAAAAAAAAAADIAAAAAAAAAAAAAAAAAAAAyAAAAAAAAAAAAAAAAAAAAMgAAAAAAAAAAAAAAAAAAADIAAAAAAAAAAAAAAAAAAAAyAAAAAAAAAAAAAAAAAAAAMgAAAAAAAAAAAAAAAAAAADIAAAAAAAAAAAAAAAAAAAAyAAAAAAAAAAAAAAAAAAAAMjIAAAAAAAAAAAAAAAAAACUyMjIlAAAAAAAAAAAAACUlAAAAAAAAAAAAAAAAAAAlJQAAAAAAAAAAAAAAAAAAJSUAAAAAAAAAAAAAAAAAACUlAAAAAAAAAAAAAAAAJSUlJSUlJSUAAAAAAAAAACUlJSUlJSUlAAAAAAAAAAAAACUlAAAAAAAAAAAAAAAAAAAlJQAAAAAAAAAAAAAAAAAAJSUAAAAAAAAAAAAAAAAAACUlAAAAAAAAAAAAAAAAAAAlJQAAAAAAAAAAAAAAAAAAJSUAAAAAAAAAAAAAAAAAACUlAAAAAAAAAAAAAAAAAAAlJQAAAAAAAAAAAAAAAAAAACUlJQAlAAAAAAAAAAAAAAASJSUlJQAAAAA=',
+    'u': 'AAAAAB0dAAAAAAAdHQAAAAAAAAAdHQAAAAAAHR0AAAAAAAAAHQAAAAAAAB0dAAAAAAAAHR0AAAAAAAAdHQAAAAAAAB0AAAAAAAAdHR0AAAAAAAAdAAAAAAAAHR0dAAAAAB0dHQAAAAAAHR0AHQAAAAAdHR0AAAAAAB0AAB0AAAAAHR0dAAAAAB0AAAAdAAAAAB0dAAAAAB0dAAAAHQAAAAAdHQAAAAAdAAAAAB0AAAAAHR0AAAAdHQAAAAAdAAAAAB0dHQAdHQAAAAAAHR0AAAAdHR0dHQAAAAAAAB0dAAAAHR0dHQAAAAAAAAAdHR0AAAAAAAAAAAAAAAAAAB0AAAAAABkZAAAAAAAAAAAAAAAAABkZGQAAAAAAAAAZGQAAAAAZGRkAAAAAAAAAGRkZAAAAGRkZAAAAAAAAABkZAAAAABkZAAAAAAAAABkZGQAAAAAZGQAAAAAAAAAZGRkAAAAZGRkAAAAAAAAZGRkZAAAAGRkAAAAAAAAAGRkZGQAAABkZAAAAAAAAGRkZGQAAAAAZGQAAAAAAABkZGRkAAAAAGRkAAAAAABkZABkZAAAAABkZAAAAABkZGQAZGRkAAAAZGQAAGRkZGQAAGRkZAAAAGRkZGRkZGQAAABkZGQAAABkZGRkZGQAAAAAAGRkZAAAAGRkZGQAAAAAAABkZGQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACIAAAAAAAAAAAAAAAAAAAAiAAAAAAAAIhEAAAAAAAAiIgAAAAAAIiIRAAAAAAAAIhEAAAAAESIiAAAAAAAAIiIAAAAAACIiIgAAAAAAACIiAAAAABEiIiIAAAAAAAAiIgAAAAAiIiIiAAAAAAAiIiIAABEiGQAiIggAABERIiIiACIiIgAAACIiIiIiEQAiIiIiIgAAAAAAIiIiAAAAESIiEQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFxcAAAAAAAAAFxcAAAAAABcXAAAAAAAAABcXAAAAFxcXFwAAAAAAABcXFxcAABcXFxcAAAAAAAAXFxcXAAAXFxcXAAAAAAAAFxcXFwAAFxcXFwAAAAAAABcXFwAAABcXFxcAAAAAAAAXFxcAAAAXFxcXAAAAAAAAFxcXAAAAFxcXFwAAAAAAABcXFwAAABcXFxcAAAAAAAAXFxcAAAAXFxcXAAAAAAAAFxcXAAAAFxcXFwAAAAAAABcXFwAAABcXFxcXAAAAAAAXFxcAAAAAABcXFxcXFxcXFxcXAAAAAAAXFxcXFxcXFxcXFxcAAAAAAAAXFxcXFxcAFxcAABkZGRkZAAAAAAAAABkZAAAZGRkZGQAAAAAAAAAZGQAAAAAZGRkAAAAAAAAZGRkAAAAAGRkZAAAAAAAAGRkZAAAAABkZGQAAAAAAABkZGQAAAAAZGRkAAAAAAAAZGRkAAAAAGRkZAAAAAAAAGRkZAAAAABkZGQAAAAAAABkZGQAAAAAZAAAAAAAAGRkZGRkAAAAAGQAAAAAAABkZGRkZAAAAABkAAAAAAAAZGRkZGQAAAAAZGRkAAAAZAAAZGRkAAAAAGRkZGRkZAAAAGRkZGQAAABkZGRkZGQAAABkZGRkAAAAZGRkZAAAAAAAAGRkZGQAAAAAAAAAAAAAAAAAAAAAAGhoaAAAAAAAAAAAaGgAAABoaGgAAAAAAAAAAGhoAAAAaGhoAAAAAAAAAABoaAAAAGhoaAAAAAAAAAAAaGgAAABoaGgAAAAAAAAAAGhoAAAAaGhoAAAAAAAAAABoaAAAAGhoaAAAAAAAAAAAaGgAAABoaGgAAAAAAAAAAGhoAAAAaGhoAAAAAAAAAABoaAAAAGhoaAAAAAAAAAAAaGgAAABoaGgAAAAAAAAAAGhoAAAAaGhoAAAAAAAAAABoaAAAAGhoaAAAAAAAAABoaGgAAABoaGhoAAAAAABoaGhoAAAAAGhoaGhoaGhoaGhoaAAAAAAANGhoaGhoNDQAaGgAAGRkZGRkAAAAZGRkZGRkAAAAZGRkZAAAAAAAZGRkZAAAAABkZGQAAAAAAABkZGQAAAAAZGRkAAAAAAAAZGRkAAAAAGRkZAAAAAAAAGRkZAAAAABkZGQAAAAAAABkZGQAAAAAZGRkAAAAAAAAZGRkAAAAAGRkZAAAAAAAAGRkZAAAAABkZGQAAAAAAABkZGQAAAAAZGRkAAAAAAAAZGRkAAAAAGRkZAAAAAAAAGRkZAAAAABkZGQAAAAAAABkZGQAAAAAZGRkAAAAAABkZGRkAAAAAABkZGRkAGRkAGRkZAAAAAAAAGRkZGRkAABkZGRkZAAAAAAAAAAAAAAAAAAAAAAAYGBgAAAAAAAAAGBgYAAAAGBgYAAAAAAAAABgYGAAAABgYGAAAAAAAAAAYGBgAAAAYGBgAAAAAAAAAGBgYAAAAGBgYAAAAAAAAABgYGAAAABgYGAAAAAAAAAAYGBgAAAAYGBgAAAAAAAAAGBgYAAAAGBgYAAAAAAAAABgYGAAAABgYGAAAAAAAAAAYGBgAAAAYGBgAAAAAAAAAGBgYAAAAGBgYAAAAAAAAABgYGAAAABgYGAAAAAAAAAAYGBgAAAAYGBgAAAAAABgYGBgYAAAAGBgYGBgYGBgYGBgYGAAAAAAYGBgYGBgYGAAYGBgAAAAAABgYGBgYAAAAGBgYAAA=',
+    'v': 'AAAAAAAAAAAAAAAAAAAnAAAAAAAAAAAAAAAAAAAAJwAAACcnAAAAAAAAAAAAJxMAACcnJwAAAAAAAAAAJycAAAAAACcnAAAAAAAAACcnAAAAAAAnJwAAAAAAACcnAAAAAAAAACcnAAAAAAAnJwAAAAAAAAATJxMAAAATJwAAAAAAAAAAACcnAAAAJycAAAAAAAAAAAAAJxMAACcAAAAAAAAAAAAAACcTAAAnAAAAAAAAAAAAAAAAEwAnJwAAAAAAAAAAAAAAACcAJwAAAAAAAAAAAAAAAAATJycAAAAAAAAAAAAAAAAAEycnAAAAAAAAAAAAAAAAAAAnEwAAAAAAAAAAAAAAAAAAAAAAAAAAHQAdHR0AAAAAAAAAAAAAHR0AHR0dAAAAAAAAAAAAHR0dAB0dHQAAAAAAAAAAHR0dDwAdHR0AAAAAAAAAAB0dHQAAHR0dAAAAAAAAAB0dHQAAAAAdHQAAAAAAAB0dHQAAAAAAHR0AAAAAAAAdHQAAAAAAAB0dHQAAAAAdHR0AAAAAAAAAHR0AAAAdHR0AAAAAAAAAAB0dAAAAHR0AAAAAAAAAAAAdHR0AHR0dAAAAAAAAAAAAAB0dHR0dAAAAAAAAAAAAAAAdHR0dHQAAAAAAAAAAAAAAHR0dHQAAAAAAAAAAAAAAAAAdHQ8AAAAAAAAAAAAcHBwAAAAAAAAAAAAAHBwcHBwcAAAAAAAAAAAAABwcHBwcHBwAAAAAAAAAABwcHBwcHBwAAAAAAAAAAAAcHBwAHBwcAAAAAAAAAAAcHBwAABwcHAAAAAAAAAAAHBwAAAAcHBwcAAAAAAAAHBwAAAAAAAAcHAAAAAAAHBwcAAAAAAAAHBwAAAAAABwcAAAAAAAAABwcHAAAABwcAAAAAAAAAAAAHBwAABwcHAAAAAAAAAAAABwcHBwcHAAAAAAAAAAAAAAAHBwcHAAAAAAAAAAAAAAAABwcHBwAAAAAAAAAAAAAAAAcHBwAAAAAAAAAAAAAAAAAHBwAAAAAAAAAAAAAABwcAAAAAAAAAAAAHBwAAAAcHBwAAAAAAAAAHBwcAAAAHBwcAAAAAAAAABwcHAAAAAAcHBwAAAAAABwcHAAAAAAAHBwcAAAAAAAcHBwAAAAAABwcHAAAAAAAHBwcAAAAAAAAHBwcAAAAHBwcAAAAAAAAABwcHAAAABwcHAAAAAAAAAAcHBwAABwcHAAAAAAAAAAAABwcHAAcHBwAAAAAAAAAAAAcHBwcHBwAAAAAAAAAAAAAABwcHBwcAAAAAAAAAAAAAAAcHBwcAAAAAAAAAAAAAAAAHBwcHAAAAAAAAAAAAAAAAAAcHBwAAAAAAAAAAAAAAAAAABwAAAAAAAAAABsbGxsbAAAAAAAAABsbGwAbGxsbGwAAAAAAAAAbGxsAAAAAABsbGwAAAAAAABsbGwAAAAAbGxsAAAAAAAAbGxsAAAAAGxsbAAAAAAAAGxsbAAAAABsbGwAAAAAAABsbAAAAAAAbGxsAAAAAAAAbGwAAAAAAABsbGwAAAAAbGxsAAAAAAAAbGxsAAAAAGwAAAAAAAAAAGxsbAAAAABsAAAAAAAAAABsbGwAAGxsAAAAAAAAAAAAbGxsAABsbAAAAAAAAAAAAGxsbGxsbGwAAAAAAAAAAABsbGxsbAAAAAAAAAAAAAAAbGxsbGwAAAAAAAAAAAAAAAAAbAAAAAAAAAAAbGxsAAAAAAAAAAAAAGxsAGxsbAAAAAAAAAAAAGxsOAAAbGxsAAAAAAAAAABsbDgAAGxsbAAAAAAAAAAAbGw4AAAAbGxsAAAAAAAAbGxsAAAAAGxsbAAAAAAAAGxsbAAAAABsbGwAAAAAAABsbAAAAAAAAGxsbAAAAABsbGwAAAAAAABsbGwAAAAAbGxsAAAAAAAAAGxsAAAAbGxsAAAAAAAAAABsbGwAAGxsbAAAAAAAAAAAbGxsAABsbAAAAAAAAAAAAABsbGxsbGwAAAAAAAAAAAAAbGxsbGxsAAAAAAAAAAAAAGxsbGxsAAAAAAAAAAAAAAAAbGxsOAAAAAAAAHh4eHh4eHgAAAB4eHh4eHgAeHh4eAAAAAAAAAB4eHgAAAB4eHgAAAAAAAAAeHgAAAAAAHh4eAAAAAAAAHgAAAAAAAB4eHgAAAAAAHh4AAAAAAAAAHh4eAAAAAB4AAAAAAAAAAB4eHgAAAAAeAAAAAAAAAAAeHh4AAAAeHgAAAAAAAAAAAB4eHgAAHgAAAAAAAAAAAAAeHh4AHh4AAAAAAAAAAAAAAB4eHh4AAAAAAAAAAAAAAAAeHh4eAAAAAAAAAAAAAAAAHh4eHgAAAAAAAAAAAAAAAAAeHgAAAAAAAAAAAAAAAAAAHh4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAcHBwAAAAAAAAAABwcHAAAHBwcAAAAAAAAAAAcHBwAAAAcHAAAAAAAAAAAHBwAAAAAHBwcAAAAAAAAHBwcAAAAABwcHAAAAAAAABwcHAAAAAAAHBwcAAAAABwcHAAAAAAAABwcHAAAAAAcHBwAAAAAAAAcHBwAAAAAHBwAAAAAAAAAABwcHAAAHBwcAAAAAAAAAAAcHBwAABwcHAAAAAAAAAAAABwcAAAcHAAAAAAAAAAAAAAcHBwcHBwAAAAAAAAAAAAAHBwcHBwcAAAAAAAAAAAAAAAcHBwcAAAAAAAAAAAAAAAAHBwcHAAAAAAAAAAAAAAAAAAcHAAAAAAAAAA=',
+    'w': 'AAAAAAAAAAAAAAAAAAAAACEhIQAAAAAAAAAhIQAAABEhISEAAAAAAAAAIQAAAAAhAAAhIQAAAAAAISEAAAAAEQAAISEAAAAAACEhAAAAABEAAAAhAAAAACEhIQAAAAARAAAAISEAAAAhISEAAAAAEQAAABEhAAAhIQARAAAAABkAAAAAIQAAIQAAESEAAAAhAAAAACERISEAABEhAAAAEQAAAAAhESEAAAAAIQAAABEAAAAAISEhAAAAACEhACEAAAAAAAAhIQAAAAAhISEhAAAAAAAAIQAAAAAAABERAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACMAAAAAAAAAAAAAAAAAIyMjAAAAAAAJIwkAAAAAIxsjIwAAAAAAIyMAAAAAEiMSIyMAAAAAEiMjEgAAABsjACMjAAAAACMSIxIAAAAjAAASIwAAABIjACMbAAASIwAAACMAAAAjAAAAIwAAIxIAAAAjIwASGwAAABsjCSMSAAAAEiMjIxIAAAASIyMjAAAAABIjIyMAAAAAABIjEgAAAAAAEiMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAhAAAAAAAAAAAAAAAAACEhIRAAAAAAECEAAAAAACEhISEQAAAAABkhAAAAAAghCCEhEAAAAAAhIQAAAAAhIQAhIRAAAAAhISEAAAAAISEAISEQAAAQIRAhIQAAECEAAAAhEAAAISEAISEQACEQAAAAIRAAACEAAAAhEAAhEAAAACEhECEZAAAAECEhIQgAAAAAISEhEAAAAAAhISEAAAAAABkhEAAAAAAACBAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABkZGQAAAAAZGQAAAAAAGQwZGRkAAAAAGRkZAAAAABkZGRkZAAAAGRkZGQAAABkZDBkZGQAAABkZGRkAAAAZGQwZGRkAAAAZGRkZDAAAGRkMABkZGQAMGRkZGQwAABkZDAAZGRkADBkMGRkMABkZGQAAGRkZABkZAAAZDAAZGRkAABkZGQAZAAAAGQwAGRkAAAAZGRkZGQAAABkZGRkZAAAAABkZGRkAAAAZGRkZGQAAAAAZGRkMAAAAABkZGQAAAAAADBkZBgAAAAAZGQwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAICAgIAAAAAAAAAAAAAAgICAgICAAAAAAAAAAAAAAICAAACAgAAAAACAgAAAAAAAgAAAAIAAAAAAgICAAAAAAIAAAACAgAAAAICAgAAAAICAAAAAgIAAAACAgIAAAACAAAAAAICAAACAgICAAAAAgAAAAAAAgAAAgAAAgIAAgAAAAAAAAICAgAAAAICAgAAAAAAAAACAgAAAAACAgIAAAAAAAAAAgIAAAAAAgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB4eDwAAAAAPHh4AAAAAHh4eHg8AAAAADx4eAAAAAB4eAB4eAAAAAB4eHgAAAAAeFgAeHgAAAAAeHh4PAAAPHg8ADx4AAAAeFgAeDwAADx4PAAAeHgAAHg8AHh4AAA8eAAAAHh4ADx4PAAAeAAAeHgAAABYeAA8eAAAAHg8AHh4AAAAPHh4eHgAAAA8eAB4AAAAADx4eHgAAAAAPHh4eAAAAAAAeHh4AAAAADx4eHgAAAAAAHh4PAAAAAAAeHg8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJSUlJRIAAAAlEgAAJSUlJQASJSUAAAASJRwAAAASEgAAACUlAAAAJSUlAAAAEgAAAAASJRIACSUSJRIAABwAAAAAEiUSABIAACUlAAASAAAAAAAlHAAcAAAcJQklCQAAAAAAJSUAEgAAEiUSJQAAAAAAAAAlJRIAAAklJRIAAAAAAAAAJSUAAAAAJSUAAAAAAAAAABISAAAAAAAlAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHx8PAAAAAA8fAAAAAAAfHwAfHwAAAAAfHx8AAAAAHw8AHx8AAAAAHx8fAAAADx8PAB8fAAAAHx8fHw8AAA8fDwAAHwAAAB8PAB8PAAAPHwAAAB8fAAAfDwAfFwAAHx8AAAAfHwAPHwAAAB8AAB8AAAAADx8ADx8AAAAfAAAfAAAAAA8fHxcPAAAAHx8PHwAAAAAAHx8fAAAAAA8fHw8AAAAAAB8fHwAAAAAPHx8PAAAAAAAfHw8AAAAACB8fDwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+    'x': 'AAAAJgAAAAAAAAAAAAAAAAAAACYmAAAAAAAAAAAAAAAAAAAAJgAAAAAAJiYAAAAAAAAAACYmAAAAACYAAAAAAAAAAAAAJgAAACYmAAAAAAAAAAAAACYmAAAmAAAAAAAAAAAAAAAAJgAmAAAAAAAAAAAAAAAAACYmJgAAAAAAAAAAAAAAAAAAJgAAAAAAAAAAAAAAAAAAJiYmAAAAAAAAAAAAAAAAACYmJgAAAAAAAAAAAAAAACYmACYmAAAAAAAAAAAAAAAmAAAAJiYAAAAAAAAAAAAmJgAAAAAmJhMAAAAAAAAAJgAAAAAAJiYTAAAAAAAAACYmEwAAAAATCgAAAAAAAAAcHAAAAAAAAAAAHAAAAAAAHBwcAAAAAAAAHBwAAAAAABwcHAAAAAAAHBwcAAAAAAAcHBwAAAAAABwcDgAAAAAAHBwcAAAAABwcHAAAAAAAAAAcHAAAABwcHAAAAAAAAAAAHBwOABwcHAAAAAAAAAAAAAAcHBwcDgAAAAAAAAAAAAAAHBwcAAAAAAAAAAAAAAAAHBwcHBwAAAAAAAAAAAAAHBwcDhwcHAAAAAAAAAAAHBwcAAAcHBwcAAAAAAAAHBwcHAAAABwcHBwcAAAAABwcHAAAAAAAHBwcHA4AABwcHAAAAAAAAAAAHBwAAAAcHA4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAdHQAAAAAAAB0AAAAAAAAdHR0AAAAAAAAdHQAAAAAAHR0dAAAAAAAdHR0AAAAAAB0dHQAAAAAAHR0AAAAAAAAAHR0dAAAOHR0HAAAAAAAAAAAdHQ4dHR0AAAAAAAAAAAAAHR0dHR0dAAAAAAAAAAAAAAAdHR0dAAAAAAAAAAAAAAAOHR0dHQAAAAAAAAAWAAAdHR0OHR0dHQAAAB0dDgAdHR0dAAAdHR0dHR0dHQAdHR0dAAAAAB0dHR0dHQAAHR0OAAAAAAAADg4OAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAZGQAAAAAAAAAAAAAZGQAAGRkZAAAAAAAAAAAZGRkAABkZGRkAAAAAAAAZGRkZAAAAGRkZGQAAAAAZGRkZAAAAAAAZGRkZABkZGRkAAAAAAAAAABkZGRkZGRkAAAAAAAAAAAAAGRkZGRkAAAAAAAAAAAAAABkZGRkAAAAAAAAAAAAAABkZGRkZGQAAAAAAAAAAABkZGRkZGRkZAAAAAAAAABkZGRkAABkZGQAAAAAAABkZGRkAAAAAGRkZAAAAABkZGRkAAAAAABkZGRkAABkZGRkAAAAAAAAAGRkZGQAAGRkAAAAAAAAAAAAZGRkAAAAAAAAAAAAAAAAAABkZAAAAAAAAAAAAAAAAAAAAAAAAAAAeHh4eAAAAAAAeHh4AAAAAHh4eHgAAAAAAHh4eAAAAAAAAAB4eAAAAHh4eHh4AAAAAAAAeHgAAHh4AAAAAAAAAAAAAAB4eHh4AAAAAAAAAAAAAAAAeHh4eAAAAAAAAAAAAAAAAHh4eAAAAAAAAAAAAAAAAAB4eHgAAAAAAAAAAAAAAAB4eHh4eAAAAAAAAAAAAAAAeHh4eHgAAAAAAAAAAAB4eHgAeHh4AAAAAAB4eHh4eHgAAAAAeHgAAAAAeHh4eAAAAAAAAHh4eHh4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAaGhoaAAAAAAAAAAAaGhoAABoaGhoAAAAAAAAAGhoNAAAAGhoaAAAAAAAAGhoaAAAAABoaGhoAAAAAGhoaAAAAAAAAGhoaGgAAGhoaAAAAAAAAAAAaGhoAABoaGgAAAAAAAAAAABoaGhoaGgAAAAAAAAAAAAAaGhoaGgAAAAAAAAAAAAAAABoaGhoAAAAAAAAAAAAAABoaGhoaAAAAAAAAAAAAAAAaGhoaGhoAAAAAAAAAAAAaGhoAGhoaGgAAAAAAAAAaGhoAAAAaGhoaAAAAAAAaGhoaAAAAABoaGgAAAAAAGhoaAAAAAAAAGhoaAAANGhoNAAAAAAAAAA0aGhMAGhoaGhoaGgAAABoaGhoaABoaGhoaGhoAAAAaGhoaGgAAABoaGhoAAAAAABoaGgAAAAAAGhoaAAAAAAAaAAAAAAAAAAAaGhoAAAAaGgAAAAAAAAAAABoaGgAAGgAAAAAAAAAAAAAaGhoaGgAAAAAAAAAAAAAAABoaGgAAAAAAAAAAAAAAAAAAGhoaAAAAAAAAAAAAAAAAGhoaGhoAAAAAAAAAAAAAGhoAGhoaAAAAAAAAAAAAABoAAAAaGhoAAAAAAAAAABoAAAAAGhoaGgAAAAAAABoaAAAAAAAaGhoAAAAAABoaGgAAAAAAGhoaGgAAGhoaGhoaAAAAGhoaGhoaGgAaGhoAAAAAAAAAABoaGgAAABoaGgAAAAAAABoaGgAAAAAaGhoaAAAAABoaGgAAAAAAABoaGgAAAAAaGhoAAAAAAAAAGhoaAAAaGhoAAAAAAAAAABoaGhoaGhoAAAAAAAAAAAAAGhoaGhoaAAAAAAAAAAAAAAAaGhoaAAAAAAAAAAAAAAAAGhoaGgAAAAAAAAAAAAAAGhoaGhoaAAAAAAAAAAAAABoaGhoaGgAAAAAAAAAAABoaGgAAGhoaAAAAAAAAABoaGgAAABoaGhoAAAAAABoaGhoAAAAAGhoaGgAAAAAaGhoAAAAAAAAaGhoAAAAaGhoAAAAAAAAAGhoaGgA=',
+    'y': 'AAAAAAAAAAAAAAAYAAAAAAAAAAAvAAAAAAAAGAAAAAAAAAAALwAAAAAAABgAAAAAAAAAAC8AAAAAAAAvAAAAAAAAAAAvLwAAAAAALwAAAAAAAAAALy8AAAAALy8AAAAAAAAAAAAvAAAAAC8vAAAAAAAAAAAALy8AGC8YGAAAAAAAAAAAAAAvLy8AABgAAAAAAAAAAAAAAC8AAAAYAAAAAAAAAAAAAAAAAAAAGAAAAAAAAAAAAAAAAAAALxgAAAAAAAAAAAAAAAAAAC8YAAAAAAAAAAAAAAAAAAAvGAAAAAAAAAAAAAAAAAAALxgAAAAAAAAAAAAAAAAAABgjAAAAAAAAAAAAAAAAAAAAACMAAAAAAAAAABEjAAAAAAAjAAAAAAAAAAAjIwAAAAAjIwAAAAAAAAARIxEAAAAAIyMAAAAAAAAAESMAAAAAACMjAAAAAAAAABojAAAAAAkjIwAAAAAAAAAjIwAAAAAjIyMAAAAAAAAAIyMAABEjGiMjAAAAAAAAABojIyMaEQAjEQAAAAAAAAAAIyMAAAAAIxEAAAAAAAAAAAAAAAAAESMRAAAAAAAAAAAAAAAAABEjAAAAAAAAABEAAAAAAAAjIwAAAAAAAAAjEQAAAAAjIwAAAAAAAAAAESMjEREaIxoAAAAAAAAAAAAJESMjIxEJAAAAAAAAAAAAAAAAAAAAAAAlAAAAAAAAACUAAAAAAAAAJQAAAAAAABIlAAAAAAAAJRwAAAAAAAAlEgAAAAAAACUSAAAAAAAAJRIAAAAAABIlEgAAAAAAJSUJAAAAAAAcJQAAAAAAACUlAAAAAAAlJSUAAAAAAAAlJQkAABwlJSUAAAAAAAAAJSUlJSUlAAAlAAAAAAAAAAAlJSUlAAAlEgAAAAAAAAAAAAAAAAAAJRIAAAAAAAAAAAAAAAAAJSUAAAAAAAAAAAAAAAAAACUlAAAAAAAAAAAAAAAAABIlJQAAAAAAAAAAAAAAAAASJQAAAAAAAAAAAAAAAAAAHCUAAAAAAAAAAAAAACQAAAAAAAAAJAAAAAAAACQkJAAAAAAAJCQAAAAAAAAAJCQJAAAACSQkAAAAAAAAABIkEgAAABIkEgAAAAAAAAAJJCQAAAAkJAkAAAAAAAAAACQkJAAkJCQAAAAAAAAAAAAAJCQSJCQAAAAAAAAAAAAAABIkJCQSAAAAAAAAAAAAAAASJCQkEgAAAAAAAAAAAAAAACQkJAAAAAAAAAAAAAAAAAAkJAAAAAAAAAAAAAAAAAAJJBsAAAAAAAAAAAAAAAAAEiQSAAAAAAAAAAAAAAAAACQkCQAAAAAAAAAAAAAAAAAkJAAAAAAAAAAAAAAAAAASJBIAAAAAAAAAAAAAAAAoKCgAAAAAACgAAAAAAAAAACgoAAAAAAAoAAAAAAAAAAAAKCgAAAAAFAAAAAAAAAAAACgoAAAAKBQAAAAAAAAAAAAoKAAAACgAAAAAAAAAAAAAACgoACgoAAAAAAAAAAAAAAAoKAAoAAAAAAAAAAAAAAAAKCgoKAAAAAAAAAAAAAAAAAAoKAAAAAAAAAAAAAAAAAAAKCgAAAAAAAAAAAAAAAAAACgAAAAAAAAAAAAAAAAAAAAoAAAAAAAAAAAAAAAAAAAoKAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAAAAAAAAAAKCgAAAAAAAAAAAAAACgoKBQAAAAAAAAAAAAAACUlEwAAAAAAACUlAAAAAAAlJRMAAAAAABMlEwAAAAAAACUlAAAAAAATJQkAAAAAAAAAJSUAAAAAJSUAAAAAAAAAABwlCQAAEyUTAAAAAAAAAAATJRMAACUlAAAAAAAAAAAACSUcABMlEwAAAAAAAAAAAAAlJQATJRMAAAAAAAAAAAAAACUlJSUAAAAAAAAAAAAAAAAlJSUTAAAAAAAAAAAAAAAAEyUlAAAAAAAAAAAAAAAAABMlEwAAAAAAAAAAAAAAAAATJRMAAAAAAAAAAAAAAAAAJSUAAAAAAAAAAAAAAAAAJSUAAAAAAAAAAAAAAAAAACUlAAAAAAAAAAAAAAAmJiYmJhMAACYmJiYAAAAAACYmJgAAAAAAJiYTAAAAAAAAHSYTAAAAACYTAAAAAAAAABMmJgAAABMmAAAAAAAAAAAAJiYTAAATAAAAAAAAAAAAACYmEwAAHQAAAAAAAAAAAAAAJiYAABMAAAAAAAAAAAAAABMmExMKAAAAAAAAAAAAAAAAJiYmAAAAAAAAAAAAAAAAACYmJgAAAAAAAAAAAAAAAAATJgAAAAAAAAAAAAAAAAAAEwAAAAAAAAAAAAAAAAAAABMAAAAAAAAAAAAAAAAAAAAdAAAAAAAAAAAAAAAmEwAmAAAAAAAAAAAAAAATJiYmEwAAAAAAAAAAAAAAACQkEgAAAAAAJCQAAAAAAAAkJBIAAAAAACQkAAAAAAAAACQkAAAAAAkkEgAAAAAAAAAkJAAAAAASJBIAAAAAAAAAACQkAAAAJCQAAAAAAAAAAAAkJAAAACQSAAAAAAAAAAAAEiQSACQkAAAAAAAAAAAAAAkkGwAkGwAAAAAAAAAAAAAAJCQkJBIAAAAAAAAAAAAAACQkJCQAAAAAAAAAAAAAAAAAJCQkAAAAAAAAAAAAAAAAACQkAAAAAAAAAAAAAAAAAAAkJAAAAAAAAAAAAAAAAAASJAAAAAAAAAAAAAAAAAAAJCQAAAAAAAAAAAAAAAAAEiQSAAAAAAAAAAA=',
+    'z': 'AAAAAAAeHh4eAAAAAAAAAAAAAAAAHh4eHgAAAAAAAAAAAAAeHh4eHh4AAAAAAAAAHh4eHgAAHgAAAAAAAAAAAAAAAAAAAB4AAAAAAAAAAAAAAAAAAB4eAAAAAAAAAAAAAAAAAAAeAAAAAAAAAAAAAAAAAAAeHh4eHh4AAAAAAAAeHh4eHh4eAAAAAAAAAAAAHh4eHh4eHgAAAAAAAAAAAAAAAB4AAAAAAAAAAAAAAAAAAB4eAAAAAAAAAAAAAB4AAAAeAAAAAAAAAAAAAAAeAB4eHgAAAAAAAAAAAAAeHgAeHh4AAAAAAAAAAB4eHgAAAAAeHh4eHh4eHh4eAAAAAAAAABwcAAAAAAAAHBwcHA4AAAAcHBwcHBwcHBwcHBwOAAAAABwcHBwcHBwcHBwcAAAAAAAAAAAAAAAAABwcAAAAAAAAAAAAAAAAABwcAAAAAAAAAAAAAAAAABwcAAAAAAAAAAAAAAAAABwcAAAAAAAAAAAAAAAAABwcAAAAAAAAAAAAAAAAABwcAAAAAAAAAAAAAAAAABwcAAAAAAAAAAAAAAAAABwcAAAAAAAAAAAAAAAAABwcAAAAHBwcHBwcDgAAABwcHBwcHBwcHBwcHA4AABwcHBwcHBwcHBwcHBwcDhwcDg4ODgAAAAAAAAAABwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAgAAAAAAAgICAAAAAQICAgIAAAAAAAICAgICAgICAgICAAAAAAAAAgICAgAAAAICAAAAAAAAAAAAAAAAAAICAAAAAAAAAAAAAAAAAAECAAAAAAAAAAAAAAAAAAEBgAAAAAAAAAAAAAAAAAICAAAAAAAAAAAAAAAAAAICAAAAAAAAAAAAAAAAAAICAgAAAAAAAAAAAAIAAAICAgICAgAAAAAAAAICAAICAgICAgICAgICAgICAQICAQAAAAAAgQEBAQEBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGBgYGBgYGBgYGBgYAAAAABgYGBgYGBgYGBgYGAAAGBgYGBgYGBgYGBgYGBgAAAAAGBgYGBgYGBgYGBgYAAAAAAAAAAAAAAAAGBgYAAAAAAAAAAAAAAAAGBgYAAAAAAAAAAAAAAAAGBgYAAAAAAAAAAAAAAAAGBgYAAAAAAAAAAAAAAAAABgYGAAAAAAAAAAAAAAAABgYGAAAAAAAAAAAAAAAABgYGAAAAAAAAAAAAAAAABgYGAAAAAAAAAAAAAAAABgYGBgAAAAAAAAAAAAAABgYGBgYGBgYGBgYAAAAGBgYGBgYGBgYGBgYGBgAABgYGBgYGBgYGBgYGBgAAAAAABoaGhoaGhoaGhoaAAAAAAAaGhoaGhoaGhoaGgAAABoaGhoaGhoaGhoaGhoAAAAaGhoaGhoaGhoaGhoaAAAAGhoAAAAAAAAAABoAAAAAAAAAAAAAAAAAGhoAAAAAAAAAAAAAAAAAABoaAAAAAAAAAAAAAAAAABoAAAAAAAAAAAAAAAAAGhoAAAAAAAAAAAAAAAAAABoaAAAAAAAAAAAAAAAAABoAAAAAAAAAAAAAAAAAAAAaAAAAAAAAAAAAAAAAABoaAAAAAAAAAAAAGgAAGhoaGhoaGhoaGhoaGgAAABoaGhoaGhoaGhoaGhoAAAAaGgAAAAAAGhoaGhoaAAAAAAAbGxsbGxsbGxsbGwAAAAAAGxsbGxsbGxsbGxsAAAAAABsbGxsbGxsbGxsbAAAAAAAAAAAAAAAAABsbGwAAAAAAAAAAAAAAAAAbGw0AAAAAAAAAAAAAAAAbGxsAAAAAAAAAAAAAAAAbGxsAAAAAAAAAAAAAAAAbGxsAAAAAAAAAAAAAAAAbGxsAAAAAAAAAAAAAAAAbGxsbAAAAAAAAAAAAAAAbGxsbAAAAAAAAAAAAAAAAGxsbAAAAAAAAAAAAAAAAGxsbAAAAAAAAAAAAAAAAGxsbAAAAAAAAAAAAAAAAGxsbGxsbGxsbGxsbAAAAABsbGxsbGxsbGxsbGwAAAAAAGxsbGxsbGxsbGxsAAAAAABsbGxsbGxsbGxsbAAAAAAAbGwAAAAAAGxsbAAAAAAAAGwAAAAAAGxsbGwAAAAAAABsAAAAAABsbGwAAAAAAAAAAAAAAABsbGwAAAAAAAAAAAAAAAAAbGxsAAAAAAAAAAAAAAAAbGxsAAAAAAAAAAAAAAAAbGxsAAAAAAAAAAAAAAAAAGxsbAAAAAAAAAAAAAAAAGxsbAAAAAAAAAAAAAAAAGxsbGwAAAAAAGwAAAAAAABsbGwAAAAAAGxsAAAAAABsbGwAAAAAAABsbAAAAAAAbGxsAAAAAABsbGwAAABsbGxsbGxsbGxsbGxsAAAAAGxsbGxsbGxsbGxsbAAAAABsbGxsbGxsbGxsbGwAAAAAAAAAAAAAAABsbGxsAAAAAAAAAAAAAAAAbGxsAAAAAAAAAAAAAAAAbGxsAAAAAAAAAAAAAAAAbGxsAAAAAAAAAAAAAAAAAGxsbAAAAAAAAAAAAAAAAGxsbAAAAAAAAAAAAAAAAGxsbAAAAAAAAAAAAAAAAGxsbAAAAAAAAAAAAAAAAABsbGwAAAAAAAAAAAAAAABsbGwAAAAAAAAAAAAAAABsbGwAAAAAAAAAAAAAAABsbGxsAAAAAAAAAAAAAAAAbGxsbGxsbGxsbGxsAAAAAGxsbGxsbGxsbGxsbAAA='
+  }
+};
+if (typeof module !== 'undefined') module.exports = GLYPH_PROTOTYPES;
+</script>
+<script>
+// matcher.js — four-gate audit: expected word + per-letter recogniser output
+// -> flag / stay silent. Deterministic and pure (Node-testable). The whole
+// point is to catch a word the student TICKED CORRECT that is actually wrong,
+// without crying wolf when the photo is bad, the writing is illegible, or the
+// recogniser is merely unsure. Conservatism lives in the gates, not in
+// demanding many errors — a single confident wrong letter is enough to flag.
+//
+// Input per word:
+//   expected  — the target spelling (string)
+//   selfMark  — 'tick' (student says correct) | 'cross' (says wrong) | null
+//   cells     — array of recogniser verdicts for the row's boxes, in order:
+//               { blank:bool, letter, scores:{a..z->cosine}, topScore }
+//   imageOk   — did the pipeline cleanly capture this page/row (Gate 1)
+//
+// The recogniser never guesses a letter cold from 26 options here; it only has
+// to rate the ONE expected letter against the alternatives, which is why a
+// middling reader can still drive a trustworthy audit.
+const Matcher = (() => {
+
+  // Pilot-tunable thresholds. Cosine scores are of unit feature vectors, so
+  // ~0.9+ is a strong match, ~0.6 weak. These want calibrating against real
+  // handwriting once the pilot returns photos — they are deliberately exposed.
+  const CFG = {
+    matchMargin: 0.05,      // expected within this of the top read -> a plausible match (Gate 4, lenient side)
+    mismatchMargin: 0.10,   // top must beat expected by this to count as a confident mismatch (Gate 4)
+    minTopConf: 0.60,       // ...and the winning letter must be at least this confident (Gate 4)
+    minLegible: 0.60,       // fraction of expected letters we must read confidently (Gate 2)
+    minFlagConfidence: 0    // final triage floor; 0 = any confident error flags (Gate 4 already gates per-letter)
+  };
+
+  function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
+
+  // Classify one box against its expected letter.
+  function positionState(cell, ch, cfg) {
+    if (!cell || cell.blank) return { state: 'missing', expected: ch };
+    const scores = cell.scores || {};
+    const expScore = ch in scores ? scores[ch] : -1;
+    const top = cell.letter;
+    const topScore = (top in scores) ? scores[top] : (cell.topScore || 0);
+    const margin = topScore - expScore;
+    let state;
+    if (top === ch || margin <= cfg.matchMargin) state = 'match';          // expected is the read, or essentially tied
+    else if (margin >= cfg.mismatchMargin && topScore >= cfg.minTopConf) state = 'mismatch'; // confident other letter
+    else state = 'uncertain';                                              // too close to call -> drives illegibility
+    return { state, expected: ch, top, expScore, topScore, margin };
+  }
+
+  // Audit a single word. Returns a verdict object (see verdict field).
+  function matchWord(expected, cells, opts) {
+    opts = opts || {};
+    const cfg = Object.assign({}, CFG, opts.cfg);
+    const selfMark = opts.selfMark || null;
+    const imageOk = opts.imageOk !== false;
+    expected = String(expected || '').toLowerCase();
+    cells = cells || [];
+
+    const occupied = cells.map((c, i) => ({ c, i })).filter(x => x.c && !x.c.blank);
+    const base = { expected, selfMark, read: '', positions: [], legibility: 0,
+      gates: {}, confidence: 0, reason: '' };
+
+    // Gate 1 — capture.
+    if (!imageOk) return Object.assign(base, { verdict: 'suppressed-image',
+      gates: { capture: false }, reason: 'page/row not cleanly captured — not audited' });
+
+    // Nothing written: no evidence to audit (the student may not have attempted).
+    if (occupied.length === 0) return Object.assign(base, { verdict: 'ok',
+      gates: { capture: true, written: false }, reason: 'row blank — nothing to audit' });
+
+    const firstOcc = occupied[0].i, lastOcc = occupied[occupied.length - 1].i;
+    const nExpected = expected.length;
+    const positions = [];
+    let nMatch = 0, nMismatch = 0, nUncertain = 0, nMissing = 0;
+
+    for (let k = 0; k < nExpected; k++) {
+      const bi = firstOcc + k;                 // align expected start to first written box (tolerates left shift)
+      const p = positionState(cells[bi], expected[k], cfg);
+      p.k = k; p.bi = bi;
+      if (p.state === 'match') nMatch++;
+      else if (p.state === 'mismatch') nMismatch++;
+      else if (p.state === 'missing') nMissing++;
+      else nUncertain++;
+      positions.push(p);
+    }
+
+    // Extra letters: written boxes past the expected length (within the run).
+    let nSpurious = 0;
+    for (const x of occupied) if (x.i >= firstOcc + nExpected) nSpurious++;
+
+    // Read-back string over the written span (blank -> '_').
+    let read = '';
+    for (let i = firstOcc; i <= lastOcc; i++) {
+      const c = cells[i];
+      read += (!c || c.blank) ? '_' : (c.letter || '?');
+    }
+
+    const legibility = nExpected ? clamp01((nExpected - nUncertain) / nExpected) : 0;
+    const confidentError = nMismatch > 0 || nMissing > 0 || nSpurious > 0;
+    const cleanAgreement = nMismatch === 0 && nMissing === 0 && nSpurious === 0 && nMatch === nExpected;
+    const gates = { capture: true, written: true, legibility,
+      legible: legibility >= cfg.minLegible, confidentError, cleanAgreement };
+
+    // Gate 2 — legibility.
+    if (!gates.legible) return Object.assign(base, { read, positions, legibility, gates,
+      verdict: 'suppressed-illegible',
+      reason: 'too little of the row read confidently (' +
+        Math.round(legibility * 100) + '%) — not audited' });
+
+    // Confidence (triage strength, not a gate unless minFlagConfidence raised).
+    let sevSum = 0, sevN = 0;
+    for (const p of positions) {
+      if (p.state === 'mismatch') { sevSum += clamp01(p.margin / (2 * cfg.mismatchMargin)); sevN++; }
+      else if (p.state === 'missing') { sevSum += 1; sevN++; }
+    }
+    sevN += nSpurious; sevSum += nSpurious; // each extra letter = full-severity error
+    const errs = nMismatch + nMissing + nSpurious;
+    const meanSev = sevN ? sevSum / sevN : 0;
+    const errConfidence = clamp01(0.6 * meanSev + 0.4 * clamp01(errs / Math.max(1, nExpected)));
+
+    // Gates 3 + 4 — disagreement + severity, branched by what the student claimed.
+    let verdict = 'ok', confidence = 0, reason = '';
+    if (selfMark === 'tick') {
+      if (confidentError && errConfidence >= cfg.minFlagConfidence) {
+        verdict = 'flag-wrong'; confidence = errConfidence;
+        reason = 'ticked ✓ but reads "' + read + '" vs expected "' + expected + '" — ' +
+          describe(nMismatch, nMissing, nSpurious);
+      } else { reason = 'ticked ✓ and the read is consistent with "' + expected + '"'; }
+    } else if (selfMark === 'cross') {
+      if (cleanAgreement) {
+        const meanExp = positions.reduce((s, p) => s + (p.expScore || 0), 0) / Math.max(1, nExpected);
+        verdict = 'flag-right'; confidence = clamp01(meanExp);
+        reason = 'marked ✗ but the writing matches "' + expected + '" — may actually be correct';
+      } else { reason = 'marked ✗ and the read is not a clean match — consistent with an error'; }
+    } else {
+      if (confidentError) { verdict = 'review'; confidence = errConfidence;
+        reason = 'no self-mark; reads "' + read + '" vs "' + expected + '"'; }
+      else { reason = 'no self-mark; read consistent with "' + expected + '"'; }
+    }
+
+    return { expected, selfMark, read, positions, legibility, gates, verdict, confidence: +confidence.toFixed(3), reason };
+  }
+
+  function describe(mm, ms, sp) {
+    const parts = [];
+    if (mm) parts.push(mm + ' letter' + (mm > 1 ? 's' : '') + ' differ');
+    if (ms) parts.push(ms + ' missing');
+    if (sp) parts.push(sp + ' extra');
+    return parts.join(', ');
+  }
+
+  // Audit a list of words. words: [{expected, selfMark, cells, imageOk}].
+  // Returns { results, summary } where summary tallies the verdicts.
+  function auditWords(words, opts) {
+    const results = (words || []).map(w =>
+      Object.assign({ id: w.id }, matchWord(w.expected, w.cells,
+        { selfMark: w.selfMark, imageOk: w.imageOk, cfg: opts && opts.cfg })));
+    const summary = { total: results.length, flagWrong: 0, flagRight: 0,
+      suppressed: 0, ok: 0, review: 0 };
+    for (const r of results) {
+      if (r.verdict === 'flag-wrong') summary.flagWrong++;
+      else if (r.verdict === 'flag-right') summary.flagRight++;
+      else if (r.verdict === 'review') summary.review++;
+      else if (r.verdict && r.verdict.indexOf('suppressed') === 0) summary.suppressed++;
+      else summary.ok++;
+    }
+    return { results, summary };
+  }
+
+  return { CFG, matchWord, auditWords, positionState };
+})();
+</script>
+<script>
 // Session flow, persistence, code import, reporting, template printing.
 //
 // The deck is a set of TARGETS (db.items), each scheduled by the
@@ -1324,6 +2071,7 @@ const App = (() => {
 
   let db = null;
   let session = null;
+  let recogModel = null;   // baked letter recogniser, loaded once at init
 
   // ---------- persistence ----------
 
@@ -1459,7 +2207,8 @@ const App = (() => {
       fixup: [], results: {}, times: {},
       start: Date.now(), wordShownAt: null,
       counts: { again: 0, good: 0, easy: 0 },
-      photoPages: 0, photosTaken: 0
+      photoPages: 0, photosTaken: 0,
+      reads: {}, ocr: null   // OCR read-back per item id (Phase 2 audit)
     };
   }
 
@@ -1585,12 +2334,119 @@ const App = (() => {
     show('scr-photo');
   }
 
-  function photoTaken() {
+  async function photoTaken() {
     if (!$('photo-input').files.length) return;
     session.photosTaken++;
-    $('photo-status').textContent =
-      'Photo taken — your page is on record.';
-    // Phase 2: the photo is handed to the on-device OCR check here.
+    const status = $('photo-status');
+    status.textContent = 'Reading your page…';
+    try {
+      await runOcrForPage($('photo-input').files[0]);
+    } catch (e) {
+      session.ocr = { ok: false, reason: 'error' };
+    }
+    // Student-facing wording stays neutral — the audit is for the teacher,
+    // and practice must never stall on an OCR hiccup.
+    status.textContent = 'Photo taken — your page is on record.';
+  }
+
+  // On-device OCR for the page just photographed: find the sheet, crop each
+  // letter-box, read it, and stash the per-word read-back keyed by item id.
+  // The flag decision waits for end-of-session, when the tick/cross is known.
+  // Row j on the printed sheet == the j-th word on this page (box j+1).
+  async function runOcrForPage(file) {
+    if (!recogModel || typeof VisionApp === 'undefined' ||
+        typeof Geometry === 'undefined') return;
+    let img;
+    try {
+      img = await createImageBitmap(file);
+    } catch (e) {
+      img = await new Promise((res, rej) => {
+        const im = new Image();
+        im.onload = () => res(im);
+        im.onerror = rej;
+        im.src = URL.createObjectURL(file);
+      });
+    }
+    const image = VisionApp.toImageData(img, 1600);
+    const res = VisionApp.runPipeline(image);
+    const pageWords = pageItems();
+    if (!res.ok) {
+      pageWords.forEach(w => { session.reads[w.id] = { imageOk: false, cells: [] }; });
+      session.ocr = { ok: false, reason: res.reason };
+      return;
+    }
+    for (let j = 0; j < pageWords.length; j++) {
+      const crops = VisionApp.extractCells(image, res.Hc2p, { cells: Geometry.rowCells(j) });
+      const cells = crops.map(cc => Recognise.recognise(cc.crop, recogModel));
+      // keep the raw cell images (memory only) so a flagged word can carry a
+      // snapshot of the actual handwriting home for the teacher to eyeball.
+      session.reads[pageWords[j].id] = { imageOk: true, cells, crops: crops.map(cc => cc.crop) };
+    }
+    session.ocr = { ok: true };
+  }
+
+  // Combine each word's OCR read-back with the student's tick/cross into a
+  // four-gate verdict. Only genuine flags are kept (the rest stay silent).
+  // Each flag carries a stitched snapshot of the actual handwriting.
+  function buildAudit() {
+    if (!session || !session.reads || typeof Matcher === 'undefined') return [];
+    const flags = [];
+    for (const it of session.items) {
+      const read = session.reads[it.id];
+      if (!read) continue;
+      const g = session.results[it.id];
+      if (g == null) continue;
+      const selfMark = g === 1 ? 'cross' : 'tick';
+      let v;
+      try {
+        v = Matcher.matchWord(it.word, read.cells, { selfMark, imageOk: read.imageOk });
+      } catch (e) { continue; }
+      if (v.verdict === 'flag-wrong' || v.verdict === 'flag-right') {
+        const flag = { id: it.id, word: it.word, mark: selfMark,
+          verdict: v.verdict, read: v.read, conf: v.confidence };
+        const strip = wordStrip(read);
+        if (strip) flag.crop = strip;
+        flags.push(flag);
+      }
+    }
+    return flags;
+  }
+
+  // Stitch the written boxes of one row into a small PNG data URL — the
+  // teacher's-eye view of what the kid actually wrote.
+  function wordStrip(read) {
+    if (typeof document === 'undefined' || !read.crops) return null;
+    const cells = read.cells, crops = read.crops;
+    let first = -1, last = -1;
+    for (let i = 0; i < cells.length; i++) {
+      if (cells[i] && !cells[i].blank) { if (first < 0) first = i; last = i; }
+    }
+    if (first < 0) return null;
+    const cw = 24, ch = 30, n = last - first + 1;
+    const cv = document.createElement('canvas');
+    cv.width = cw * n; cv.height = ch;
+    const ctx = cv.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+    for (let i = first; i <= last; i++) {
+      const crop = crops[i];
+      if (!crop) continue;
+      const tmp = document.createElement('canvas');
+      tmp.width = crop.width; tmp.height = crop.height;
+      tmp.getContext('2d').putImageData(
+        new ImageData(new Uint8ClampedArray(crop.data), crop.width, crop.height), 0, 0);
+      ctx.drawImage(tmp, (i - first) * cw, 0, cw, ch);
+    }
+    return cv.toDataURL('image/png');
+  }
+
+  // Crops are bulky; keep them only on the most recent sessions so localStorage
+  // (and the report) stay bounded. Older flags keep their text, lose the image.
+  function pruneOldCrops() {
+    const keep = 8;
+    const ss = db.sessions;
+    for (let i = 0; i < ss.length - keep; i++) {
+      if (ss[i].flags) ss[i].flags.forEach(f => { delete f.crop; });
+    }
   }
 
   function showCheck() {
@@ -1652,7 +2508,8 @@ const App = (() => {
   function endSession() {
     const secs = Math.round((Date.now() - session.start) / 1000);
     const times = Object.values(session.times).sort((a, b) => a - b);
-    db.sessions.push({
+    const flags = buildAudit();
+    const rec = {
       d: today(), secs,
       done: session.items.length,
       again: session.counts.again,
@@ -1661,8 +2518,11 @@ const App = (() => {
       medSecs: times.length ? times[Math.floor(times.length / 2)] : 0,
       pages: session.photoPages,
       photos: session.photosTaken
-    });
+    };
+    if (flags.length) rec.flags = flags;   // OCR audit flags ride home in the report
+    db.sessions.push(rec);
     if (db.sessions.length > 200) db.sessions = db.sessions.slice(-200);
+    pruneOldCrops();
     save();
     $('sum-done').textContent = session.items.length;
     $('sum-right').textContent = session.counts.good + session.counts.easy;
@@ -1777,6 +2637,11 @@ const App = (() => {
     if (navigator.storage && navigator.storage.persist) {
       navigator.storage.persist();
     }
+    try {
+      if (typeof GLYPH_PROTOTYPES !== 'undefined' && typeof Recognise !== 'undefined') {
+        recogModel = Recognise.loadModel(GLYPH_PROTOTYPES);
+      }
+    } catch (e) { recogModel = null; }   // audit is best-effort; never block practice
     speechSynthesis.onvoiceschanged = pickVoice;
     pickVoice();
 

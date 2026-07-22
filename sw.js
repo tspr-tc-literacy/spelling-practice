@@ -1,4 +1,4 @@
-const CACHE = 'spelling-app-v2.2.0';
+const CACHE = 'spelling-app-v2.3.0';
 const ASSETS = ['./', './index.html', './template.html',
   './manifest.webmanifest'];
 

@@ -213,12 +213,18 @@ textarea {
 // NEVER reorder or delete entries. extract_words.py appends only.
 const CONFIG = {
   APP_NAME: 'Spelling Practice',
-  VERSION: '2.2.0',
+  VERSION: '2.3.0',
   TEACHER_NAME: 'Mr Sproule',
   TEACHER_EMAIL: 'tspr@tc.vic.edu.au',
   DAILY_MAX: 10,
   PAGE_SIZE: 10,
-  LADDER: [1, 2, 4, 7]
+  // Intensive ladder for intervention students (2026-07-21, Tim's call):
+  // a week of DAILY exposures, then a week of every-2nd-day, then
+  // every-3rd, and so on - 20 exposures over ~8 weeks before FSRS takes
+  // over for long-term maintenance. Replaces the old [1, 2, 4, 7] (just 4
+  // exposures over a fortnight), which wasn't enough repetition for the
+  // students the standard STM pacing already isn't reaching.
+  LADDER: [1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 4, 4, 5, 5, 6, 7]
 };
 const MASTER = [
   ['freshest', 1],
@@ -1052,10 +1058,16 @@ const MASTER = [
 ];
 </script>
 <script>
-// Hybrid scheduler (decided 2026-06-12): a word's first week runs on a
-// fixed ladder; FSRS takes over once the word graduates.
+// Hybrid scheduler: a word climbs a fixed ladder of exposures first;
+// FSRS takes over once it graduates off the top rung.
 //
-// Ladder phase (ph 'L', rungs over CONFIG.LADDER = [1, 2, 4, 7] days):
+// The ladder is INTENSIVE (2026-07-21) — a week of daily exposures, then
+// every-2nd-day, every-3rd-day and so on, ~20 exposures across ~8 weeks.
+// These are students the standard STM pacing already isn't reaching, so
+// the deck deliberately front-loads repetition rather than spacing out
+// fast. FSRS then handles long-term maintenance after the ladder.
+//
+// Ladder phase (ph 'L', rungs over CONFIG.LADDER):
 //   Wrong   -> back to the first rung, lapse recorded
 //   Correct -> climb one rung
 //   Easy    -> climb two rungs, CAPPED at the top rung - nothing

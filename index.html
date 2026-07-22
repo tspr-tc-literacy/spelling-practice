@@ -213,11 +213,18 @@ textarea {
 // NEVER reorder or delete entries. extract_words.py appends only.
 const CONFIG = {
   APP_NAME: 'Spelling Practice',
-  VERSION: '2.3.0',
+  VERSION: '2.4.0',
   TEACHER_NAME: 'Mr Sproule',
   TEACHER_EMAIL: 'tspr@tc.vic.edu.au',
   DAILY_MAX: 10,
   PAGE_SIZE: 10,
+  // Max targets allowed in the intensive DAILY band at once (2026-07-22).
+  // With a week of daily exposures per target, an unbounded deck demands
+  // far more than DAILY_MAX a night; the overflow then silently starves
+  // the newest words (they sort last behind an overdue backlog). Throttling
+  // intake keeps the "every day" promise real for whatever IS active:
+  // ~6 in daily drill + the thinning tails of older bands ~= 10 a night.
+  INTAKE_MAX: 6,
   // Intensive ladder for intervention students (2026-07-21, Tim's call):
   // a week of DAILY exposures, then a week of every-2nd-day, then
   // every-3rd, and so on - 20 exposures over ~8 weeks before FSRS takes
@@ -1166,7 +1173,65 @@ const Sched = (() => {
       interval: fsrsInterval(s) };
   }
 
-  return { grade, fsrsInterval };
+  // ---- session selection ----
+
+  // How many rungs sit in the intensive daily band (interval 1).
+  function dailyRungs(cfg) {
+    let n = 0;
+    for (const iv of cfg.LADDER) { if (iv !== 1) break; n++; }
+    return n || 1;
+  }
+
+  // Classify the deck. drill = in the daily band; spaced = still on the
+  // ladder but past daily; maint = graduated to FSRS; waiting = not yet
+  // started (throttled out by the intake cap).
+  function deckState(items, cfg) {
+    const rungs = dailyRungs(cfg);
+    const out = { drill: 0, spaced: 0, maint: 0, waiting: 0 };
+    for (const id in items) {
+      const it = items[id];
+      if (!it.reps) out.waiting++;
+      else if ((it.ph || 'L') === 'F') out.maint++;
+      else if (it.step < rungs) out.drill++;
+      else out.spaced++;
+    }
+    return out;
+  }
+
+  // Choose today's targets.
+  //
+  // Two guards, both needed once a target spends a whole week in daily
+  // drill: (1) INTAKE_MAX throttles how many targets may sit in the daily
+  // band at once, so the deck can't demand more per night than a student
+  // can actually do; (2) room is RESERVED for that new intake, so a freshly
+  // flagged word is never crowded out by an overdue backlog — without this,
+  // once DAILY_MAX items are overdue, new words never start at all.
+  function pickSession(items, order, today, cfg) {
+    const rungs = dailyRungs(cfg);
+    let inDrill = 0;
+    for (const id in items) {
+      const it = items[id];
+      if (it.reps > 0 && (it.ph || 'L') === 'L' && it.step < rungs) inDrill++;
+    }
+    const cap = cfg.INTAKE_MAX == null ? cfg.DAILY_MAX : cfg.INTAKE_MAX;
+    const headroom = Math.max(0, cap - inDrill);
+
+    const due = Object.keys(items)
+      .filter(id => items[id].reps > 0 && items[id].due && items[id].due <= today)
+      .sort((a, b) => items[a].due.localeCompare(items[b].due));
+    const queued = order.filter(id => items[id] && items[id].reps === 0);
+
+    const starting = queued.slice(0, headroom);
+    const reviews = due.slice(0, Math.max(0, cfg.DAILY_MAX - starting.length));
+    return {
+      ids: reviews.concat(starting),
+      inDrill, started: starting.length,
+      deferred: Math.max(0, due.length - reviews.length),
+      waiting: queued.length - starting.length
+    };
+  }
+
+  return { grade, fsrsInterval, pickSession, deckState, dailyRungs };
 })();
 </script>
 <script>
@@ -2204,16 +2269,9 @@ const App = (() => {
   // rendered as its current pool word, captured now so dictate and check
   // show the same word within the session.
   function buildSession() {
-    const t = today();
-    const due = Object.entries(db.items)
-      .filter(([, it]) => it.reps > 0 && it.due && it.due <= t)
-      .sort((a, b) => a[1].due.localeCompare(b[1].due))
-      .map(([id]) => id);
-    const fresh = db.order.filter(
-      id => db.items[id] && db.items[id].reps === 0);
-    const ids = due.concat(fresh).slice(0, CONFIG.DAILY_MAX);
-    if (!ids.length) return null;
-    const items = ids.map(id => ({ id, word: currentWord(db.items[id]) }));
+    const pick = Sched.pickSession(db.items, db.order, today(), CONFIG);
+    if (!pick.ids.length) return null;
+    const items = pick.ids.map(id => ({ id, word: currentWord(db.items[id]) }));
     return {
       items, page: 0, di: 0, ci: 0,
       fixup: [], results: {}, times: {},
@@ -2292,15 +2350,13 @@ const App = (() => {
 
   function renderHome() {
     if (!db.stu) { show('scr-welcome'); return; }
-    const t = today();
-    const dueN = Object.values(db.items)
-      .filter(it => it.reps > 0 && it.due && it.due <= t).length;
-    const freshN = Object.values(db.items).filter(it => it.reps === 0).length;
-    $('home-due').textContent = Math.min(dueN, CONFIG.DAILY_MAX);
-    $('home-new').textContent = Math.min(freshN,
-      Math.max(0, CONFIG.DAILY_MAX - dueN));
+    // Show what today's session will ACTUALLY hold, not the raw backlog —
+    // intake is throttled, so a big deck must not promise a big session.
+    const pick = Sched.pickSession(db.items, db.order, today(), CONFIG);
+    $('home-due').textContent = pick.ids.length - pick.started;
+    $('home-new').textContent = pick.started;
     $('home-total').textContent = Object.keys(db.items).length;
-    $('btn-start').disabled = dueN + freshN === 0;
+    $('btn-start').disabled = pick.ids.length === 0;
     renderBanner();
     show('scr-home');
   }
@@ -2401,8 +2457,13 @@ const App = (() => {
   // four-gate verdict. Only genuine flags are kept (the rest stay silent).
   // Each flag carries a stitched snapshot of the actual handwriting.
   function buildAudit() {
-    if (!session || !session.reads || typeof Matcher === 'undefined') return [];
+    if (!session || !session.reads || typeof Matcher === 'undefined') {
+      return { flags: [], audit: null };
+    }
     const flags = [];
+    // Tally every verdict, so a silent audit can be told apart from an
+    // audit that simply found nothing wrong.
+    const tally = { checked: 0, agreed: 0, flagged: 0, unclear: 0 };
     for (const it of session.items) {
       const read = session.reads[it.id];
       if (!read) continue;
@@ -2413,15 +2474,21 @@ const App = (() => {
       try {
         v = Matcher.matchWord(it.word, read.cells, { selfMark, imageOk: read.imageOk });
       } catch (e) { continue; }
+      tally.checked++;
       if (v.verdict === 'flag-wrong' || v.verdict === 'flag-right') {
+        tally.flagged++;
         const flag = { id: it.id, word: it.word, mark: selfMark,
           verdict: v.verdict, read: v.read, conf: v.confidence };
         const strip = wordStrip(read);
         if (strip) flag.crop = strip;
         flags.push(flag);
+      } else if (v.verdict && v.verdict.indexOf('suppressed') === 0) {
+        tally.unclear++;
+      } else {
+        tally.agreed++;
       }
     }
-    return flags;
+    return { flags, audit: tally.checked ? tally : null };
   }
 
   // Stitch the written boxes of one row into a small PNG data URL — the
@@ -2520,7 +2587,7 @@ const App = (() => {
   function endSession() {
     const secs = Math.round((Date.now() - session.start) / 1000);
     const times = Object.values(session.times).sort((a, b) => a - b);
-    const flags = buildAudit();
+    const { flags, audit } = buildAudit();
     const rec = {
       d: today(), secs,
       done: session.items.length,
@@ -2532,6 +2599,7 @@ const App = (() => {
       photos: session.photosTaken
     };
     if (flags.length) rec.flags = flags;   // OCR audit flags ride home in the report
+    if (audit) rec.audit = audit;          // ...and the tally, so silence is readable
     db.sessions.push(rec);
     if (db.sessions.length > 200) db.sessions = db.sessions.slice(-200);
     pruneOldCrops();
@@ -2555,6 +2623,9 @@ const App = (() => {
       req: db.pendingReq ? db.pendingReq.id : null,
       exported: new Date().toISOString(),
       app: CONFIG.VERSION,
+      // Deck shape, so an over-subscribed student is visible at a glance
+      // rather than silently backing up.
+      deck: Sched.deckState(db.items, CONFIG),
       items: Object.entries(db.items).map(([id, it]) => ({
         id, kind: it.kind, label: it.label,
         ph: it.ph || 'L', step: it.step,

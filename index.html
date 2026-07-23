@@ -213,7 +213,7 @@ textarea {
 // NEVER reorder or delete entries. extract_words.py appends only.
 const CONFIG = {
   APP_NAME: 'Spelling Practice',
-  VERSION: '2.4.0',
+  VERSION: '2.5.0',
   TEACHER_NAME: 'Mr Sproule',
   TEACHER_EMAIL: 'tspr@tc.vic.edu.au',
   DAILY_MAX: 10,
@@ -1182,15 +1182,17 @@ const Sched = (() => {
     return n || 1;
   }
 
-  // Classify the deck. drill = in the daily band; spaced = still on the
-  // ladder but past daily; maint = graduated to FSRS; waiting = not yet
-  // started (throttled out by the intake cap).
+  // Classify the deck. low = demoted to gap-filler (teacher dropped it from
+  // the struggling list); drill = active + in the daily band; spaced =
+  // active, still on the ladder but past daily; maint = graduated to FSRS;
+  // waiting = active but not yet started (throttled out by the intake cap).
   function deckState(items, cfg) {
     const rungs = dailyRungs(cfg);
-    const out = { drill: 0, spaced: 0, maint: 0, waiting: 0 };
+    const out = { drill: 0, spaced: 0, maint: 0, waiting: 0, low: 0 };
     for (const id in items) {
       const it = items[id];
-      if (!it.reps) out.waiting++;
+      if (it.pri === 'low') out.low++;
+      else if (!it.reps) out.waiting++;
       else if ((it.ph || 'L') === 'F') out.maint++;
       else if (it.step < rungs) out.drill++;
       else out.spaced++;
@@ -1208,24 +1210,41 @@ const Sched = (() => {
   // once DAILY_MAX items are overdue, new words never start at all.
   function pickSession(items, order, today, cfg) {
     const rungs = dailyRungs(cfg);
+    const active = it => it.pri !== 'low';       // low-priority don't compete
     let inDrill = 0;
     for (const id in items) {
       const it = items[id];
-      if (it.reps > 0 && (it.ph || 'L') === 'L' && it.step < rungs) inDrill++;
+      if (active(it) && it.reps > 0 && (it.ph || 'L') === 'L' && it.step < rungs) inDrill++;
     }
     const cap = cfg.INTAKE_MAX == null ? cfg.DAILY_MAX : cfg.INTAKE_MAX;
     const headroom = Math.max(0, cap - inDrill);
 
+    // Tier 1 + 2: active reviews (oldest-due first) + throttled new intake.
     const due = Object.keys(items)
-      .filter(id => items[id].reps > 0 && items[id].due && items[id].due <= today)
+      .filter(id => active(items[id]) && items[id].reps > 0 &&
+        items[id].due && items[id].due <= today)
       .sort((a, b) => items[a].due.localeCompare(items[b].due));
-    const queued = order.filter(id => items[id] && items[id].reps === 0);
+    const queued = order.filter(id => items[id] && active(items[id]) && items[id].reps === 0);
 
     const starting = queued.slice(0, headroom);
     const reviews = due.slice(0, Math.max(0, cfg.DAILY_MAX - starting.length));
+    let ids = reviews.concat(starting);
+
+    // Tier 3: low-priority gap-fillers top the session up to DAILY_MAX,
+    // most-due first, pulled early if needed so the child still gets a full
+    // set. They never displace an active word (they only take spare slots).
+    let fillers = 0;
+    if (ids.length < cfg.DAILY_MAX) {
+      const pool = Object.keys(items)
+        .filter(id => items[id].pri === 'low')
+        .sort((a, b) => (items[a].due || '9999').localeCompare(items[b].due || '9999'));
+      const take = pool.slice(0, cfg.DAILY_MAX - ids.length);
+      fillers = take.length;
+      ids = ids.concat(take);
+    }
+
     return {
-      ids: reviews.concat(starting),
-      inDrill, started: starting.length,
+      ids, inDrill, started: starting.length, fillers,
       deferred: Math.max(0, due.length - reviews.length),
       waiting: queued.length - starting.length
     };
@@ -1357,11 +1376,17 @@ const Codec = (() => {
     });
   }
 
+  // A leading '~' marks the entry LOW-PRIORITY (maintenance / gap-filler):
+  // kept and scheduled, but it only fills a session once the active words
+  // are placed, and it never counts against the daily-intake cap.
   function parseEntry(raw, genDate) {
-    if ((raw[0] === 'm' || raw[0] === 'r') && raw[1] === ':') {
-      return parseTarget(raw, genDate);
-    }
-    return parseWord(raw, genDate);
+    let pri = null;
+    if (raw[0] === '~') { pri = 'low'; raw = raw.slice(1); }
+    const e = ((raw[0] === 'm' || raw[0] === 'r') && raw[1] === ':')
+      ? parseTarget(raw, genDate)
+      : parseWord(raw, genDate);
+    if (e && pri) e.pri = pri;
+    return e;
   }
 
   async function decode(encoded) {
@@ -2228,6 +2253,9 @@ const App = (() => {
     let added = 0, seeded = 0, overridden = 0;
     for (const e of code.entries) {
       const existing = db.items[e.id];
+      // Priority is a teacher directive from THIS cycle's list — it updates
+      // on every import even though scheduler state is local-wins below.
+      const pri = e.pri === 'low' ? 'low' : undefined;
       if (e.force && e.state) {
         // Teacher override: force-overwrite, idempotent by genDate.
         if (existing && existing.ovApplied &&
@@ -2235,22 +2263,24 @@ const App = (() => {
         db.items[e.id] = Object.assign(
           { kind: e.kind, label: e.label, pool: e.pool, poolIdx: 0,
             added: existing ? existing.added : code.genDate },
-          e.state, { ovApplied: code.genDate });
+          e.state, { ovApplied: code.genDate, pri });
         if (!existing) db.order.push(e.id);
         overridden++;
         continue;
       }
       if (existing) {
         // Local scheduler state wins, but refresh the rotating pool so a
-        // morph/rule target gets fresh vehicle words over cycles.
+        // morph/rule target gets fresh vehicle words over cycles, and update
+        // priority so a dropped word demotes / a re-added word promotes.
         if (e.pool && e.pool.length) existing.pool = e.pool;
+        existing.pri = pri;
         continue;
       }
       if (e.state) {
-        db.items[e.id] = Object.assign(newItem(e, code.genDate), e.state);
+        db.items[e.id] = Object.assign(newItem(e, code.genDate), e.state, { pri });
         seeded++;
       } else {
-        db.items[e.id] = newItem(e, today());
+        db.items[e.id] = Object.assign(newItem(e, today()), { pri });
         added++;
       }
       db.order.push(e.id);

@@ -213,7 +213,7 @@ textarea {
 // NEVER reorder or delete entries. extract_words.py appends only.
 const CONFIG = {
   APP_NAME: 'Spelling Practice',
-  VERSION: '2.6.0',
+  VERSION: '2.7.0',
   TEACHER_NAME: 'Mr Sproule',
   TEACHER_EMAIL: 'tspr@tc.vic.edu.au',
   DAILY_MAX: 10,
@@ -2659,6 +2659,10 @@ const App = (() => {
       req: db.pendingReq ? db.pendingReq.id : null,
       exported: new Date().toISOString(),
       app: CONFIG.VERSION,
+      // The genDate of the link this device is actually running, so a family
+      // that never applied an update shows up as "behind" on ingest instead
+      // of the child silently practising stale words.
+      deckDate: db.lastCodeDate || null,
       // Deck shape, so an over-subscribed student is visible at a glance
       // rather than silently backing up.
       deck: Sched.deckState(db.items, CONFIG),

@@ -41,6 +41,8 @@ main { max-width: 480px; margin: 0 auto; padding: 20px 16px 40px; }
 h1 { font-size: 24px; margin: 12px 0 16px; }
 p { line-height: 1.5; margin-bottom: 12px; }
 .hint { color: #555; font-size: 15px; }
+#photo-status.ok { color: #2e6b3a; font-weight: 600; }
+#photo-status.warn { color: #a32d2d; font-weight: 600; }
 .count { color: #555; font-size: 14px; margin-bottom: 8px; }
 button {
   font-family: inherit; font-size: 17px; border-radius: 10px;
@@ -159,7 +161,8 @@ textarea {
 
 <section id="scr-photo" class="screen">
   <h1>Photograph your page</h1>
-  <p class="hint">All four black corners in the shot.</p>
+  <p class="hint">Lay the sheet flat and fit the <b>whole page</b> in the photo —
+     all four black corner squares must show, or it can't be read.</p>
   <label class="primary big photo-btn">
     &#128247; Take the photo
     <input id="photo-input" type="file" accept="image/*"
@@ -213,7 +216,7 @@ textarea {
 // NEVER reorder or delete entries. extract_words.py appends only.
 const CONFIG = {
   APP_NAME: 'Spelling Practice',
-  VERSION: '2.7.0',
+  VERSION: '2.8.0',
   TEACHER_NAME: 'Mr Sproule',
   TEACHER_EMAIL: 'tspr@tc.vic.edu.au',
   DAILY_MAX: 10,
@@ -2433,7 +2436,9 @@ const App = (() => {
 
   function showPhoto() {
     session.photoPages++;
-    $('photo-status').textContent = '';
+    const status = $('photo-status');
+    status.textContent = '';
+    status.className = 'hint';
     $('photo-input').value = '';
     show('scr-photo');
   }
@@ -2448,9 +2453,23 @@ const App = (() => {
     } catch (e) {
       session.ocr = { ok: false, reason: 'error' };
     }
-    // Student-facing wording stays neutral — the audit is for the teacher,
-    // and practice must never stall on an OCR hiccup.
-    status.textContent = 'Photo taken — your page is on record.';
+    // Feedback so a mis-framed page can be retaken instead of silently failing.
+    // Never blocks: the Continue button stays live, so practice can't stall.
+    status.className = 'hint' + (session.ocr ? (session.ocr.ok ? ' ok' : ' warn') : '');
+    status.textContent = photoFeedback(session.ocr);
+  }
+
+  // What to tell the family after a photo. When OCR isn't available at all
+  // (recogniser didn't load) we stay neutral rather than nag.
+  function photoFeedback(ocr) {
+    if (!ocr) return 'Photo taken — your page is on record.';
+    if (ocr.ok) return 'Looks good — the whole page was read. Tap "Check my words".';
+    if (ocr.reason === 'orientation') {
+      return 'Hmm — the page looks turned around. Lay it the right way up and ' +
+        'take the photo again.';
+    }
+    return 'Hmm — that photo missed part of the page. Take it again with the ' +
+      'whole sheet flat and all four corner squares in the frame.';
   }
 
   // On-device OCR for the page just photographed: find the sheet, crop each

@@ -216,7 +216,7 @@ textarea {
 // NEVER reorder or delete entries. extract_words.py appends only.
 const CONFIG = {
   APP_NAME: 'Spelling Practice',
-  VERSION: '2.8.0',
+  VERSION: '2.8.1',
   TEACHER_NAME: 'Mr Sproule',
   TEACHER_EMAIL: 'tspr@tc.vic.edu.au',
   DAILY_MAX: 10,
@@ -235,7 +235,14 @@ const CONFIG = {
   // spacing is only earned when the student is getting the word right. Just
   // TWO daily nights (not a full week) lets words graduate out of the daily
   // band fast, so new words always have room to start.
-  LADDER: [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7]
+  LADDER: [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7],
+  // OCR audit flag emission. Disabled 2026-08-10: on real handwriting the
+  // font-prototype recogniser never once agreed with a correct word (0 of
+  // 100), and once v2.8.0's photo fix let detection succeed it flagged 7-10
+  // of every 10 CORRECT words as wrong in the teacher's report. Kept silent
+  // until a working reader replaces it. The photo step + on-device OCR still
+  // run; only the (untrustworthy) flags and tally are withheld from the report.
+  AUDIT_ENABLED: false
 };
 const MASTER = [
   ['freshest', 1],
@@ -2512,6 +2519,10 @@ const App = (() => {
   // four-gate verdict. Only genuine flags are kept (the rest stay silent).
   // Each flag carries a stitched snapshot of the actual handwriting.
   function buildAudit() {
+    // OCR audit disabled (CONFIG.AUDIT_ENABLED) while the recogniser is
+    // unreliable — see data.js. Stay silent: no flags, no tally, no crops
+    // ride home, so the report carries no false "wrong" verdicts.
+    if (!CONFIG.AUDIT_ENABLED) return { flags: [], audit: null };
     if (!session || !session.reads || typeof Matcher === 'undefined') {
       return { flags: [], audit: null };
     }

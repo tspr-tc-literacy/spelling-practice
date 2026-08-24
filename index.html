@@ -72,6 +72,25 @@ button {
 .g-again { background: #fdecea; border-color: #e8a39c; color: #a32d2d; }
 .g-good { background: #eaf6ec; border-color: #9ccfa6; color: #2e6b3a; }
 .g-easy { background: #eef3f7; border-color: #a8c3d8; color: #1d4f78; }
+.grades.two button { width: 48%; }
+
+/* Segmentation ladder */
+.seg-stagebar { display: flex; gap: 4px; margin: 4px 0 14px; }
+.seg-step { flex: 1; text-align: center; font-size: 11px; padding: 5px 2px;
+  border-radius: 6px; background: #f0f0f0; color: #999; border: 1px solid #e6e6e6; }
+.seg-step.on { background: #2d5f8a; color: #fff; border-color: #2d5f8a; font-weight: 600; }
+.seg-step.done { background: #eaf6ec; color: #2e6b3a; border-color: #9ccfa6; }
+.seg-prompt { font-size: 20px; text-align: center; margin: 18px 0; line-height: 1.45; }
+.seg-word { font-weight: 700; color: #2d5f8a; white-space: nowrap; }
+.seg-answer { font-size: 32px; font-weight: 700; text-align: center; padding: 18px 8px;
+  background: #fff; border: 2px solid #2d5f8a; border-radius: 12px; margin: 12px 0; word-break: break-word; }
+.seg-chip { display: inline-block; padding: 2px 8px; }
+.seg-chip.big { font-size: 40px; }
+.seg-dot { color: #bbb; margin: 0 2px; }
+.seg-actions { display: flex; gap: 8px; justify-content: center; margin: 12px 0; flex-wrap: wrap; }
+.seg-actions .speak, .seg-actions .ghost { display: inline-block; margin: 0; }
+.ghost { background: #fff; border: 1px solid #c5d4e0; color: #2d5f8a;
+  padding: 12px 16px; border-radius: 8px; font-weight: 600; cursor: pointer; }
 .stats { display: flex; gap: 10px; margin: 16px 0; }
 .stats div {
   flex: 1; background: #fff; border: 1px solid #ddd; border-radius: 10px;
@@ -181,6 +200,22 @@ textarea {
   <button id="btn-fix-done" class="primary big">Done — next</button>
 </section>
 
+<section id="scr-seg" class="screen">
+  <p id="seg-count" class="count"></p>
+  <div id="seg-stagebar" class="seg-stagebar"></div>
+  <div id="seg-prompt" class="seg-prompt"></div>
+  <div id="seg-answer" class="seg-answer hidden"></div>
+  <div class="seg-actions">
+    <button id="btn-seg-hear" class="speak">&#128266; Hear</button>
+    <button id="btn-seg-reveal" class="ghost">See answer</button>
+  </div>
+  <p class="hint">Say it together with a grown-up, then mark it.</p>
+  <div class="grades two">
+    <button id="btn-seg-wrong" class="g-again">&#10007; Not yet</button>
+    <button id="btn-seg-right" class="g-good">&#10003; Got it</button>
+  </div>
+</section>
+
 <section id="scr-summary" class="screen">
   <h1>Finished!</h1>
   <div class="stats">
@@ -203,17 +238,28 @@ textarea {
 // NEVER reorder or delete entries. extract_words.py appends only.
 const CONFIG = {
   APP_NAME: 'Spelling Practice',
-  VERSION: '2.9.0',
+  VERSION: '2.10.0',
   TEACHER_NAME: 'Mr Sproule',
   TEACHER_EMAIL: 'tspr@tc.vic.edu.au',
+  // SESSION_MAX caps the whole nightly session (added 2026-08-11). The old
+  // 10-word cap was an artefact of the printed 10-box template; with no
+  // template a session shows however many reviews are genuinely DUE, up to
+  // this generous ceiling — a safety valve so a student returning after a
+  // break isn't hit with 50 at once. Rarely binds in steady state. Tunable.
+  SESSION_MAX: 30,
+  // DAILY_MAX is now only the light-night FILLER target: when few reviews are
+  // due, low-priority gap-fillers top the session up to this comfortable size.
+  // It no longer caps the session (SESSION_MAX does).
   DAILY_MAX: 10,
+  // Batch size — a long session is dictated then checked in rounds of this
+  // many, so the child isn't writing 30 words before any get checked.
   PAGE_SIZE: 10,
   // How many NEW words to introduce per session (2026-07-23). The session
   // LEADS with new words (this week's fresh errors are the priority), then
   // fills with due reviews, then tops up with low-priority gap-fillers.
   // Capping intake keeps a night's NEW load manageable while a backlog
   // drains over a few sessions; in steady state a book check adds only a
-  // handful, so it rarely binds. Whole session is still capped at DAILY_MAX.
+  // handful, so it rarely binds. The whole session is capped at SESSION_MAX.
   INTAKE_MAX: 4,
   // Intensive ladder for intervention students (2026-07-23, Tim's call):
   // two exposures at each spacing, widening only on success - 1,1 (two
@@ -223,6 +269,12 @@ const CONFIG = {
   // TWO daily nights (not a full week) lets words graduate out of the daily
   // band fast, so new words always have room to start.
   LADDER: [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7],
+  // Segmentation ladder (2026-08-10, Tim): a new SEGMENTABLE word (one in
+  // SEG_DATA) climbs 4 stages — say the sounds → sound-to-letters → spell →
+  // write — before it joins normal review. This many CORRECT exposures advance
+  // a stage (a wrong resets the stage's count); one stage-exposure per session.
+  // Grounded in the manual: SM introduces to firm quickly (~1-2), then reviews.
+  SEG_THRESHOLD: 2,
   // OCR audit flag emission. Disabled 2026-08-10: on real handwriting the
   // font-prototype recogniser never once agreed with a correct word (0 of
   // 100), and once v2.8.0's photo fix let detection succeed it flagged 7-10
@@ -1210,14 +1262,18 @@ const Sched = (() => {
   // once DAILY_MAX items are overdue, new words never start at all.
   function pickSession(items, order, today, cfg) {
     const active = it => it.pri !== 'low';       // low-priority don't compete
-    const cap = cfg.INTAKE_MAX == null ? cfg.DAILY_MAX : cfg.INTAKE_MAX;
+    // SESSION_MAX caps the whole session (every review that's due, up to a
+    // generous ceiling); DAILY_MAX is only the light-night filler target.
+    // Fall back to DAILY_MAX when SESSION_MAX is unset (older configs).
+    const sessionMax = cfg.SESSION_MAX == null ? cfg.DAILY_MAX : cfg.SESSION_MAX;
+    const cap = cfg.INTAKE_MAX == null ? sessionMax : cfg.INTAKE_MAX;
 
     // Tier 1 — NEW words LEAD. This week's fresh errors are the priority, so
     // they claim slots before any review; capped so a backlog drains over a
     // few nights rather than landing all at once.
     const queued = order.filter(id => items[id] && active(items[id]) &&
       items[id].reps === 0);
-    const starting = queued.slice(0, Math.min(cap, cfg.DAILY_MAX));
+    const starting = queued.slice(0, Math.min(cap, sessionMax));
     const ids = starting.slice();
 
     // Tier 2 — due reviews, MOST-LAPSED first, so the words the student keeps
@@ -1229,12 +1285,14 @@ const Sched = (() => {
         items[a].due.localeCompare(items[b].due));
     let reviews = 0;
     for (const id of due) {
-      if (ids.length >= cfg.DAILY_MAX) break;
+      if (ids.length >= sessionMax) break;
       ids.push(id); reviews++;
     }
 
-    // Tier 3 — low-priority gap-fillers top the night up, most-due first.
-    // They only ever take spare slots, so they never displace real work.
+    // Tier 3 — low-priority gap-fillers top a LIGHT night up to DAILY_MAX (the
+    // comfortable filler target), most-due first. They only take spare slots,
+    // so they never displace real work; a busy night (already past DAILY_MAX
+    // from due reviews) gets none.
     let fillers = 0;
     if (ids.length < cfg.DAILY_MAX) {
       const pool = Object.keys(items)
@@ -1269,7 +1327,10 @@ const Sched = (() => {
 //   rule  - a spelling rule (e.g. 'doubling'); same rotating-pool idea.
 //
 // Code wire format (before compression), pipe-separated:
-//   S2|<stuId>|<genDate YYYY-MM-DD>|<requestId or ->|<entries>
+//   S2|<stuId>|<genDate YYYY-MM-DD>|<requestId or ->|<entries>[|<flags>]
+//   <flags> (optional 6th field) = comma-separated deck flags. 'seg' turns on
+//   the segmentation ladder (Spelling Mastery decks only). Omitted on normal
+//   decks, which stay exactly 5 fields.
 // entries: ';'-separated. Each entry is one of:
 //   <ref>[,step,due,reps,lapses[,s10,d10]]   - WORD target (ref-first).
 //        ref = 'i'+base36 MASTER index or 'w'+literal. Optional state;
@@ -1395,14 +1456,17 @@ const Codec = (() => {
   async function decode(encoded) {
     const text = await inflate(b64uToBytes(encoded.trim()));
     const parts = text.split('|');
-    if (parts[0] !== 'S2' || parts.length !== 5) {
+    if (parts[0] !== 'S2' || parts.length < 5 || parts.length > 6) {
       throw new Error('Unrecognised code format');
     }
-    const [, stu, genDate, req, entryStr] = parts;
+    const [, stu, genDate, req, entryStr, flags] = parts;
     const entries = entryStr
       ? entryStr.split(';').map(e => parseEntry(e, genDate)).filter(Boolean)
       : [];
-    return { stu, genDate, req: req === '-' ? null : req, entries };
+    // Optional deck flags (6th field). 'seg' enables the segmentation ladder
+    // (Spelling Mastery decks); absent on normal decks -> seg stays false.
+    const seg = (flags || '').split(',').includes('seg');
+    return { stu, genDate, req: req === '-' ? null : req, entries, seg };
   }
 
   async function encodeReport(obj) {
@@ -1411,6 +1475,12 @@ const Codec = (() => {
 
   return { decode, encodeReport };
 })();
+</script>
+<script>
+// Per-word sound+letter data for the segmentation ladder (Phase 1, 2026-08-10).
+// word -> [[soundCode, letters], ...]. Presence = segmentable (gets the ladder).
+// Generated from segmentation-ab.json; do not hand-edit.
+const SEG_DATA = {"about":[["schwa","a"],["b","b"],["ow","ou"],["t","t"]],"age":[["ai","a"],["j","ge"]],"alarm":[["schwa","a"],["l","l"],["ar","ar"],["m","m"]],"all":[["or","a"],["l","ll"]],"also":[["or","a"],["l","l"],["s","s"],["oa","o"]],"am":[["a","a"],["m","m"]],"an":[["a","a"],["n","n"]],"and":[["a","a"],["n","n"],["d","d"]],"arm":[["ar","ar"],["m","m"]],"around":[["schwa","a"],["r","r"],["ow","ou"],["n","n"],["d","d"]],"as":[["a","a"],["z","s"]],"ash":[["a","a"],["sh","sh"]],"at":[["a","a"],["t","t"]],"bad":[["b","b"],["a","a"],["d","d"]],"bag":[["b","b"],["a","a"],["g","g"]],"bald":[["b","b"],["or","a"],["l","l"],["d","d"]],"ball":[["b","b"],["or","a"],["l","ll"]],"balls":[["b","b"],["or","a"],["l","ll"],["z","s"]],"band":[["b","b"],["a","a"],["n","n"],["d","d"]],"bank":[["b","b"],["a","a"],["ng","n"],["k","k"]],"bar":[["b","b"],["ar","ar"]],"bark":[["b","b"],["ar","ar"],["k","k"]],"barked":[["b","b"],["ar","ar"],["k","k"],["t","ed"]],"barking":[["b","b"],["ar","ar"],["k","k"],["i","i"],["ng","ng"]],"barn":[["b","b"],["ar","ar"],["n","n"]],"be":[["b","b"],["ee","e"]],"bed":[["b","b"],["e","e"],["d","d"]],"beetles":[["b","b"],["ee","ee"],["t","t"],["l","le"],["z","s"]],"began":[["b","b"],["i","e"],["g","g"],["a","a"],["n","n"]],"begin":[["b","b"],["i","e"],["g","g"],["i","i"],["n","n"]],"behind":[["b","b"],["i","e"],["h","h"],["ie","i"],["n","n"],["d","d"]],"being":[["b","b"],["ee","e"],["i","i"],["ng","ng"]],"bell":[["b","b"],["e","e"],["l","ll"]],"below":[["b","b"],["i","e"],["l","l"],["oa","ow"]],"belt":[["b","b"],["e","e"],["l","l"],["t","t"]],"best":[["b","b"],["e","e"],["s","s"],["t","t"]],"better":[["b","b"],["e","e"],["t","tt"],["ur","er"]],"big":[["b","b"],["i","i"],["g","g"]],"bill":[["b","b"],["i","i"],["l","ll"]],"bird":[["b","b"],["ur","ir"],["d","d"]],"bit":[["b","b"],["i","i"],["t","t"]],"blast":[["b","b"],["l","l"],["a","a"],["s","s"],["t","t"]],"blink":[["b","b"],["l","l"],["i","i"],["ng","n"],["k","k"]],"boil":[["b","b"],["oy","oi"],["l","l"]],"bold":[["b","b"],["oa","o"],["l","l"],["d","d"]],"books":[["b","b"],["uu","oo"],["k","k"],["s","s"]],"bowl":[["b","b"],["oa","ow"],["l","l"]],"boy":[["b","b"],["oy","oy"]],"boys":[["b","b"],["oy","oy"],["z","s"]],"bring":[["b","b"],["r","r"],["i","i"],["ng","ng"]],"broil":[["b","b"],["r","r"],["oy","oi"],["l","l"]],"brook":[["b","b"],["r","r"],["uu","oo"],["k","k"]],"brown":[["b","b"],["r","r"],["ow","ow"],["n","n"]],"bud":[["b","b"],["u","u"],["d","d"]],"bunk":[["b","b"],["u","u"],["ng","n"],["k","k"]],"bus":[["b","b"],["u","u"],["s","s"]],"but":[["b","b"],["u","u"],["t","t"]],"cab":[["k","c"],["a","a"],["b","b"]],"call":[["k","c"],["or","a"],["l","ll"]],"calling":[["k","c"],["or","a"],["l","ll"],["i","i"],["ng","ng"]],"can":[["k","c"],["a","a"],["n","n"]],"cap":[["k","c"],["a","a"],["p","p"]],"car":[["k","c"],["ar","ar"]],"cards":[["k","c"],["ar","ar"],["d","d"],["z","s"]],"cart":[["k","c"],["ar","ar"],["t","t"]],"cat":[["k","c"],["a","a"],["t","t"]],"cave":[["k","c"],["ai","a"],["v","ve"]],"clap":[["k","c"],["l","l"],["a","a"],["p","p"]],"clay":[["k","c"],["l","l"],["ai","ay"]],"cloud":[["k","c"],["l","l"],["ow","ou"],["d","d"]],"clouds":[["k","c"],["l","l"],["ow","ou"],["d","d"],["z","s"]],"clown":[["k","c"],["l","l"],["ow","ow"],["n","n"]],"club":[["k","c"],["l","l"],["u","u"],["b","b"]],"clue":[["k","c"],["l","l"],["oo","ue"]],"clues":[["k","c"],["l","l"],["oo","ue"],["z","s"]],"code":[["k","c"],["oa","o"],["d","de"]],"cog":[["k","c"],["o","o"],["g","g"]],"coil":[["k","c"],["oy","oi"],["l","l"]],"coin":[["k","c"],["oy","oi"],["n","n"]],"coins":[["k","c"],["oy","oi"],["n","n"],["z","s"]],"cold":[["k","c"],["oa","o"],["l","l"],["d","d"]],"cook":[["k","c"],["uu","oo"],["k","k"]],"cot":[["k","c"],["o","o"],["t","t"]],"couch":[["k","c"],["ow","ou"],["ch","ch"]],"count":[["k","c"],["ow","ou"],["n","n"],["t","t"]],"counting":[["k","c"],["ow","ou"],["n","n"],["t","t"],["i","i"],["ng","ng"]],"cow":[["k","c"],["ow","ow"]],"cows":[["k","c"],["ow","ow"],["z","s"]],"coy":[["k","c"],["oy","oy"]],"cry":[["k","c"],["r","r"],["ie","y"]],"cup":[["k","c"],["u","u"],["p","p"]],"cut":[["k","c"],["u","u"],["t","t"]],"dad":[["d","d"],["a","a"],["d","d"]],"dads":[["d","d"],["a","a"],["d","d"],["z","s"]],"dark":[["d","d"],["ar","ar"],["k","k"]],"dart":[["d","d"],["ar","ar"],["t","t"]],"dash":[["d","d"],["a","a"],["sh","sh"]],"dashed":[["d","d"],["a","a"],["sh","sh"],["t","ed"]],"day":[["d","d"],["ai","ay"]],"depart":[["d","d"],["schwa","e"],["p","p"],["ar","ar"],["t","t"]],"did":[["d","d"],["i","i"],["d","d"]],"dig":[["d","d"],["i","i"],["g","g"]],"dish":[["d","d"],["i","i"],["sh","sh"]],"dog":[["d","d"],["o","o"],["g","g"]],"dogs":[["d","d"],["o","o"],["g","g"],["z","s"]],"doorway":[["d","d"],["or","oor"],["w","w"],["ai","ay"]],"dots":[["d","d"],["o","o"],["t","t"],["s","s"]],"down":[["d","d"],["ow","ow"],["n","n"]],"drag":[["d","d"],["r","r"],["a","a"],["g","g"]],"drank":[["d","d"],["r","r"],["a","a"],["ng","n"],["k","k"]],"drink":[["d","d"],["r","r"],["i","i"],["ng","n"],["k","k"]],"drinks":[["d","d"],["r","r"],["i","i"],["ng","n"],["k","k"],["s","s"]],"drip":[["d","d"],["r","r"],["i","i"],["p","p"]],"drum":[["d","d"],["r","r"],["u","u"],["m","m"]],"drums":[["d","d"],["r","r"],["u","u"],["m","m"],["z","s"]],"dry":[["d","d"],["r","r"],["ie","y"]],"eating":[["ee","ea"],["t","t"],["i","i"],["ng","ng"]],"eats":[["ee","ea"],["t","t"],["s","s"]],"end":[["e","e"],["n","n"],["d","d"]],"fall":[["f","f"],["or","a"],["l","ll"]],"falling":[["f","f"],["or","a"],["l","ll"],["i","i"],["ng","ng"]],"fan":[["f","f"],["a","a"],["n","n"]],"far":[["f","f"],["ar","ar"]],"farm":[["f","f"],["ar","ar"],["m","m"]],"farming":[["f","f"],["ar","ar"],["m","m"],["i","i"],["ng","ng"]],"fast":[["f","f"],["a","a"],["s","s"],["t","t"]],"fat":[["f","f"],["a","a"],["t","t"]],"fell":[["f","f"],["e","e"],["l","ll"]],"felt":[["f","f"],["e","e"],["l","l"],["t","t"]],"fill":[["f","f"],["i","i"],["l","ll"]],"fin":[["f","f"],["i","i"],["n","n"]],"fins":[["f","f"],["i","i"],["n","n"],["z","s"]],"fish":[["f","f"],["i","i"],["sh","sh"]],"fished":[["f","f"],["i","i"],["sh","sh"],["t","ed"]],"fist":[["f","f"],["i","i"],["s","s"],["t","t"]],"fit":[["f","f"],["i","i"],["t","t"]],"five":[["f","f"],["ie","i"],["v","ve"]],"flag":[["f","f"],["l","l"],["a","a"],["g","g"]],"flat":[["f","f"],["l","l"],["a","a"],["t","t"]],"flip":[["f","f"],["l","l"],["i","i"],["p","p"]],"flop":[["f","f"],["l","l"],["o","o"],["p","p"]],"flying":[["f","f"],["l","l"],["ie","y"],["i","i"],["ng","ng"]],"fog":[["f","f"],["o","o"],["g","g"]],"found":[["f","f"],["ow","ou"],["n","n"],["d","d"]],"frog":[["f","f"],["r","r"],["o","o"],["g","g"]],"frogs":[["f","f"],["r","r"],["o","o"],["g","g"],["z","s"]],"fun":[["f","f"],["u","u"],["n","n"]],"gas":[["g","g"],["a","a"],["s","s"]],"gave":[["g","g"],["ai","a"],["v","ve"]],"get":[["g","g"],["e","e"],["t","t"]],"girl":[["g","g"],["ur","ir"],["l","l"]],"glad":[["g","g"],["l","l"],["a","a"],["d","d"]],"glass":[["g","g"],["l","l"],["a","a"],["s","ss"]],"glue":[["g","g"],["l","l"],["oo","ue"]],"go":[["g","g"],["oa","o"]],"goat":[["g","g"],["oa","oa"],["t","t"]],"good":[["g","g"],["uu","oo"],["d","d"]],"got":[["g","g"],["o","o"],["t","t"]],"grab":[["g","g"],["r","r"],["a","a"],["b","b"]],"grand":[["g","g"],["r","r"],["a","a"],["n","n"],["d","d"]],"grave":[["g","g"],["r","r"],["ai","a"],["v","ve"]],"grill":[["g","g"],["r","r"],["i","i"],["l","ll"]],"grin":[["g","g"],["r","r"],["i","i"],["n","n"]],"grip":[["g","g"],["r","r"],["i","i"],["p","p"]],"ground":[["g","g"],["r","r"],["ow","ou"],["n","n"],["d","d"]],"growl":[["g","g"],["r","r"],["ow","ow"],["l","l"]],"growled":[["g","g"],["r","r"],["ow","ow"],["l","l"],["d","ed"]],"hall":[["h","h"],["or","a"],["l","ll"]],"ham":[["h","h"],["a","a"],["m","m"]],"hand":[["h","h"],["a","a"],["n","n"],["d","d"]],"handed":[["h","h"],["a","a"],["n","n"],["d","d"],["i","e"],["d","d"]],"hands":[["h","h"],["a","a"],["n","n"],["d","d"],["z","s"]],"hard":[["h","h"],["ar","ar"],["d","d"]],"hash":[["h","h"],["a","a"],["sh","sh"]],"hat":[["h","h"],["a","a"],["t","t"]],"hats":[["h","h"],["a","a"],["t","t"],["s","s"]],"held":[["h","h"],["e","e"],["l","l"],["d","d"]],"help":[["h","h"],["e","e"],["l","l"],["p","p"]],"here":[["h","h"],["eer","ere"]],"high":[["h","h"],["ie","igh"]],"hill":[["h","h"],["i","i"],["l","ll"]],"him":[["h","h"],["i","i"],["m","m"]],"his":[["h","h"],["i","i"],["z","s"]],"hit":[["h","h"],["i","i"],["t","t"]],"hog":[["h","h"],["o","o"],["g","g"]],"homes":[["h","h"],["oa","o"],["m","me"],["z","s"]],"hop":[["h","h"],["o","o"],["p","p"]],"hops":[["h","h"],["o","o"],["p","p"],["s","s"]],"hot":[["h","h"],["o","o"],["t","t"]],"hound":[["h","h"],["ow","ou"],["n","n"],["d","d"]],"howl":[["h","h"],["ow","ow"],["l","l"]],"howled":[["h","h"],["ow","ow"],["l","l"],["d","ed"]],"hunt":[["h","h"],["u","u"],["n","n"],["t","t"]],"hunted":[["h","h"],["u","u"],["n","n"],["t","t"],["i","e"],["d","d"]],"if":[["i","i"],["f","f"]],"in":[["i","i"],["n","n"]],"ink":[["i","i"],["ng","n"],["k","k"]],"its":[["i","i"],["t","t"],["s","s"]],"jam":[["j","j"],["a","a"],["m","m"]],"jar":[["j","j"],["ar","ar"]],"jell":[["j","j"],["e","e"],["l","ll"]],"jet":[["j","j"],["e","e"],["t","t"]],"join":[["j","j"],["oy","oi"],["n","n"]],"joined":[["j","j"],["oy","oi"],["n","n"],["d","ed"]],"joint":[["j","j"],["oy","oi"],["n","n"],["t","t"]],"joy":[["j","j"],["oy","oy"]],"jump":[["j","j"],["u","u"],["m","m"],["p","p"]],"junk":[["j","j"],["u","u"],["ng","n"],["k","k"]],"just":[["j","j"],["u","u"],["s","s"],["t","t"]],"keg":[["k","k"],["e","e"],["g","g"]],"kept":[["k","k"],["e","e"],["p","p"],["t","t"]],"kill":[["k","k"],["i","i"],["l","ll"]],"kin":[["k","k"],["i","i"],["n","n"]],"kit":[["k","k"],["i","i"],["t","t"]],"kites":[["k","k"],["ie","i"],["t","te"],["s","s"]],"land":[["l","l"],["a","a"],["n","n"],["d","d"]],"lands":[["l","l"],["a","a"],["n","n"],["d","d"],["z","s"]],"lap":[["l","l"],["a","a"],["p","p"]],"last":[["l","l"],["a","a"],["s","s"],["t","t"]],"late":[["l","l"],["ai","a"],["t","te"]],"leader":[["l","l"],["ee","ea"],["d","d"],["ur","er"]],"leaders":[["l","l"],["ee","ea"],["d","d"],["ur","er"],["z","s"]],"leaf":[["l","l"],["ee","ea"],["f","f"]],"leave":[["l","l"],["ee","ea"],["v","ve"]],"lent":[["l","l"],["e","e"],["n","n"],["t","t"]],"let":[["l","l"],["e","e"],["t","t"]],"letter":[["l","l"],["e","e"],["t","tt"],["ur","er"]],"lip":[["l","l"],["i","i"],["p","p"]],"list":[["l","l"],["i","i"],["s","s"],["t","t"]],"listed":[["l","l"],["i","i"],["s","s"],["t","t"],["i","e"],["d","d"]],"lit":[["l","l"],["i","i"],["t","t"]],"log":[["l","l"],["o","o"],["g","g"]],"looks":[["l","l"],["uu","oo"],["k","k"],["s","s"]],"lot":[["l","l"],["o","o"],["t","t"]],"loud":[["l","l"],["ow","ou"],["d","d"]],"mad":[["m","m"],["a","a"],["d","d"]],"man":[["m","m"],["a","a"],["n","n"]],"map":[["m","m"],["a","a"],["p","p"]],"mark":[["m","m"],["ar","ar"],["k","k"]],"marked":[["m","m"],["ar","ar"],["k","k"],["t","ed"]],"marking":[["m","m"],["ar","ar"],["k","k"],["i","i"],["ng","ng"]],"mash":[["m","m"],["a","a"],["sh","sh"]],"mashed":[["m","m"],["a","a"],["sh","sh"],["t","ed"]],"mast":[["m","m"],["a","a"],["s","s"],["t","t"]],"mat":[["m","m"],["a","a"],["t","t"]],"math":[["m","m"],["a","a"],["th","th"]],"mats":[["m","m"],["a","a"],["t","t"],["s","s"]],"may":[["m","m"],["ai","ay"]],"me":[["m","m"],["ee","e"]],"melt":[["m","m"],["e","e"],["l","l"],["t","t"]],"met":[["m","m"],["e","e"],["t","t"]],"mill":[["m","m"],["i","i"],["l","ll"]],"mop":[["m","m"],["o","o"],["p","p"]],"mouth":[["m","m"],["ow","ou"],["th","th"]],"mud":[["m","m"],["u","u"],["d","d"]],"must":[["m","m"],["u","u"],["s","s"],["t","t"]],"my":[["m","m"],["ie","y"]],"neat":[["n","n"],["ee","ea"],["t","t"]],"neck":[["n","n"],["e","e"],["k","ck"]],"net":[["n","n"],["e","e"],["t","t"]],"no":[["n","n"],["oa","o"]],"not":[["n","n"],["o","o"],["t","t"]],"now":[["n","n"],["ow","ow"]],"oil":[["oy","oi"],["l","l"]],"on":[["o","o"],["n","n"]],"out":[["ow","ou"],["t","t"]],"owl":[["ow","ow"],["l","l"]],"owls":[["ow","ow"],["l","l"],["z","s"]],"pad":[["p","p"],["a","a"],["d","d"]],"pan":[["p","p"],["a","a"],["n","n"]],"paper":[["p","p"],["ai","a"],["p","p"],["ur","er"]],"park":[["p","p"],["ar","ar"],["k","k"]],"parting":[["p","p"],["ar","ar"],["t","t"],["i","i"],["ng","ng"]],"parts":[["p","p"],["ar","ar"],["t","t"],["s","s"]],"pat":[["p","p"],["a","a"],["t","t"]],"path":[["p","p"],["a","a"],["th","th"]],"pencil":[["p","p"],["e","e"],["n","n"],["s","c"],["i","i"],["l","l"]],"pest":[["p","p"],["e","e"],["s","s"],["t","t"]],"pet":[["p","p"],["e","e"],["t","t"]],"pets":[["p","p"],["e","e"],["t","t"],["s","s"]],"pigs":[["p","p"],["i","i"],["g","g"],["z","s"]],"pill":[["p","p"],["i","i"],["l","ll"]],"pine":[["p","p"],["ie","i"],["n","ne"]],"play":[["p","p"],["l","l"],["ai","ay"]],"plow":[["p","p"],["l","l"],["ow","ow"]],"ply":[["p","p"],["l","l"],["ie","y"]],"point":[["p","p"],["oy","oi"],["n","n"],["t","t"]],"pointed":[["p","p"],["oy","oi"],["n","n"],["t","t"],["i","e"],["d","d"]],"pointing":[["p","p"],["oy","oi"],["n","n"],["t","t"],["i","i"],["ng","ng"]],"pop":[["p","p"],["o","o"],["p","p"]],"pot":[["p","p"],["o","o"],["t","t"]],"pound":[["p","p"],["ow","ou"],["n","n"],["d","d"]],"pounded":[["p","p"],["ow","ou"],["n","n"],["d","d"],["i","e"],["d","d"]],"proud":[["p","p"],["r","r"],["ow","ou"],["d","d"]],"prowl":[["p","p"],["r","r"],["ow","ow"],["l","l"]],"pup":[["p","p"],["u","u"],["p","p"]],"pups":[["p","p"],["u","u"],["p","p"],["s","s"]],"rabbits":[["r","r"],["a","a"],["b","bb"],["i","i"],["t","t"],["s","s"]],"ram":[["r","r"],["a","a"],["m","m"]],"ran":[["r","r"],["a","a"],["n","n"]],"rank":[["r","r"],["a","a"],["ng","n"],["k","k"]],"rash":[["r","r"],["a","a"],["sh","sh"]],"rat":[["r","r"],["a","a"],["t","t"]],"ray":[["r","r"],["ai","ay"]],"reach":[["r","r"],["ee","ea"],["ch","ch"]],"reached":[["r","r"],["ee","ea"],["ch","ch"],["t","ed"]],"reading":[["r","r"],["ee","ea"],["d","d"],["i","i"],["ng","ng"]],"real":[["r","r"],["ee","ea"],["l","l"]],"repeat":[["r","r"],["ee","e"],["p","p"],["ee","ea"],["t","t"]],"rerun":[["r","r"],["ee","e"],["r","r"],["u","u"],["n","n"]],"resell":[["r","r"],["ee","e"],["s","s"],["e","e"],["l","ll"]],"rest":[["r","r"],["e","e"],["s","s"],["t","t"]],"retell":[["r","r"],["ee","e"],["t","t"],["e","e"],["l","ll"]],"rib":[["r","r"],["i","i"],["b","b"]],"ring":[["r","r"],["i","i"],["ng","ng"]],"rode":[["r","r"],["oa","o"],["d","de"]],"rub":[["r","r"],["u","u"],["b","b"]],"run":[["r","r"],["u","u"],["n","n"]],"rush":[["r","r"],["u","u"],["sh","sh"]],"rushed":[["r","r"],["u","u"],["sh","sh"],["t","ed"]],"sad":[["s","s"],["a","a"],["d","d"]],"salt":[["s","s"],["or","a"],["l","l"],["t","t"]],"sand":[["s","s"],["a","a"],["n","n"],["d","d"]],"sap":[["s","s"],["a","a"],["p","p"]],"sat":[["s","s"],["a","a"],["t","t"]],"save":[["s","s"],["ai","a"],["v","ve"]],"say":[["s","s"],["ai","ay"]],"scamper":[["s","s"],["k","c"],["a","a"],["m","m"],["p","p"],["ur","er"]],"scan":[["s","s"],["k","c"],["a","a"],["n","n"]],"scar":[["s","s"],["k","c"],["ar","ar"]],"scat":[["s","s"],["k","c"],["a","a"],["t","t"]],"scram":[["s","s"],["k","c"],["r","r"],["a","a"],["m","m"]],"scrap":[["s","s"],["k","c"],["r","r"],["a","a"],["p","p"]],"scrub":[["s","s"],["k","c"],["r","r"],["u","u"],["b","b"]],"see":[["s","s"],["ee","ee"]],"seeing":[["s","s"],["ee","ee"],["i","i"],["ng","ng"]],"self":[["s","s"],["e","e"],["l","l"],["f","f"]],"sell":[["s","s"],["e","e"],["l","ll"]],"shark":[["sh","sh"],["ar","ar"],["k","k"]],"sharp":[["sh","sh"],["ar","ar"],["p","p"]],"shave":[["sh","sh"],["ai","a"],["v","ve"]],"ship":[["sh","sh"],["i","i"],["p","p"]],"shook":[["sh","sh"],["uu","oo"],["k","k"]],"shop":[["sh","sh"],["o","o"],["p","p"]],"shops":[["sh","sh"],["o","o"],["p","p"],["s","s"]],"shout":[["sh","sh"],["ow","ou"],["t","t"]],"shouted":[["sh","sh"],["ow","ou"],["t","t"],["i","e"],["d","d"]],"shouting":[["sh","sh"],["ow","ou"],["t","t"],["i","i"],["ng","ng"]],"shrink":[["sh","sh"],["r","r"],["i","i"],["ng","n"],["k","k"]],"shut":[["sh","sh"],["u","u"],["t","t"]],"shy":[["sh","sh"],["ie","y"]],"sigh":[["s","s"],["ie","igh"]],"sighed":[["s","s"],["ie","igh"],["d","ed"]],"sink":[["s","s"],["i","i"],["ng","n"],["k","k"]],"sit":[["s","s"],["i","i"],["t","t"]],"skid":[["s","s"],["k","k"],["i","i"],["d","d"]],"skill":[["s","s"],["k","k"],["i","i"],["l","ll"]],"skillet":[["s","s"],["k","k"],["i","i"],["l","ll"],["i","e"],["t","t"]],"skim":[["s","s"],["k","k"],["i","i"],["m","m"]],"skin":[["s","s"],["k","k"],["i","i"],["n","n"]],"skip":[["s","s"],["k","k"],["i","i"],["p","p"]],"sky":[["s","s"],["k","k"],["ie","y"]],"slap":[["s","s"],["l","l"],["a","a"],["p","p"]],"sled":[["s","s"],["l","l"],["e","e"],["d","d"]],"slip":[["s","s"],["l","l"],["i","i"],["p","p"]],"sly":[["s","s"],["l","l"],["ie","y"]],"small":[["s","s"],["m","m"],["or","a"],["l","ll"]],"smart":[["s","s"],["m","m"],["ar","ar"],["t","t"]],"smash":[["s","s"],["m","m"],["a","a"],["sh","sh"]],"smashed":[["s","s"],["m","m"],["a","a"],["sh","sh"],["t","ed"]],"smell":[["s","s"],["m","m"],["e","e"],["l","ll"]],"snap":[["s","s"],["n","n"],["a","a"],["p","p"]],"sniff":[["s","s"],["n","n"],["i","i"],["f","ff"]],"snip":[["s","s"],["n","n"],["i","i"],["p","p"]],"so":[["s","s"],["oa","o"]],"soft":[["s","s"],["o","o"],["f","f"],["t","t"]],"soil":[["s","s"],["oy","oi"],["l","l"]],"soot":[["s","s"],["uu","oo"],["t","t"]],"sound":[["s","s"],["ow","ou"],["n","n"],["d","d"]],"soy":[["s","s"],["oy","oy"]],"span":[["s","s"],["p","p"],["a","a"],["n","n"]],"speak":[["s","s"],["p","p"],["ee","ea"],["k","k"]],"spell":[["s","s"],["p","p"],["e","e"],["l","ll"]],"spill":[["s","s"],["p","p"],["i","i"],["l","ll"]],"spin":[["s","s"],["p","p"],["i","i"],["n","n"]],"splash":[["s","s"],["p","p"],["l","l"],["a","a"],["sh","sh"]],"splashed":[["s","s"],["p","p"],["l","l"],["a","a"],["sh","sh"],["t","ed"]],"splashing":[["s","s"],["p","p"],["l","l"],["a","a"],["sh","sh"],["i","i"],["ng","ng"]],"splint":[["s","s"],["p","p"],["l","l"],["i","i"],["n","n"],["t","t"]],"split":[["s","s"],["p","p"],["l","l"],["i","i"],["t","t"]],"spoil":[["s","s"],["p","p"],["oy","oi"],["l","l"]],"spoiled":[["s","s"],["p","p"],["oy","oi"],["l","l"],["d","ed"]],"spray":[["s","s"],["p","p"],["r","r"],["ai","ay"]],"spring":[["s","s"],["p","p"],["r","r"],["i","i"],["ng","ng"]],"sprint":[["s","s"],["p","p"],["r","r"],["i","i"],["n","n"],["t","t"]],"stall":[["s","s"],["t","t"],["or","a"],["l","ll"]],"stand":[["s","s"],["t","t"],["a","a"],["n","n"],["d","d"]],"star":[["s","s"],["t","t"],["ar","ar"]],"start":[["s","s"],["t","t"],["ar","ar"],["t","t"]],"starve":[["s","s"],["t","t"],["ar","ar"],["v","ve"]],"stay":[["s","s"],["t","t"],["ai","ay"]],"stem":[["s","s"],["t","t"],["e","e"],["m","m"]],"step":[["s","s"],["t","t"],["e","e"],["p","p"]],"steps":[["s","s"],["t","t"],["e","e"],["p","p"],["s","s"]],"still":[["s","s"],["t","t"],["i","i"],["l","ll"]],"sting":[["s","s"],["t","t"],["i","i"],["ng","ng"]],"stood":[["s","s"],["t","t"],["uu","oo"],["d","d"]],"stop":[["s","s"],["t","t"],["o","o"],["p","p"]],"stove":[["s","s"],["t","t"],["oa","o"],["v","ve"]],"stoves":[["s","s"],["t","t"],["oa","o"],["v","ve"],["z","s"]],"strap":[["s","s"],["t","t"],["r","r"],["a","a"],["p","p"]],"stray":[["s","s"],["t","t"],["r","r"],["ai","ay"]],"string":[["s","s"],["t","t"],["r","r"],["i","i"],["ng","ng"]],"strip":[["s","s"],["t","t"],["r","r"],["i","i"],["p","p"]],"strum":[["s","s"],["t","t"],["r","r"],["u","u"],["m","m"]],"sunk":[["s","s"],["u","u"],["ng","n"],["k","k"]],"swell":[["s","s"],["w","w"],["e","e"],["l","ll"]],"swim":[["s","s"],["w","w"],["i","i"],["m","m"]],"swims":[["s","s"],["w","w"],["i","i"],["m","m"],["z","s"]],"tag":[["t","t"],["a","a"],["g","g"]],"tall":[["t","t"],["or","a"],["l","ll"]],"tan":[["t","t"],["a","a"],["n","n"]],"tank":[["t","t"],["a","a"],["ng","n"],["k","k"]],"tap":[["t","t"],["a","a"],["p","p"]],"tape":[["t","t"],["ai","a"],["p","pe"]],"tar":[["t","t"],["ar","ar"]],"tell":[["t","t"],["e","e"],["l","ll"]],"telling":[["t","t"],["e","e"],["l","ll"],["i","i"],["ng","ng"]],"ten":[["t","t"],["e","e"],["n","n"]],"tent":[["t","t"],["e","e"],["n","n"],["t","t"]],"tested":[["t","t"],["e","e"],["s","s"],["t","t"],["i","e"],["d","d"]],"than":[["TH","th"],["a","a"],["n","n"]],"thank":[["th","th"],["a","a"],["ng","n"],["k","k"]],"them":[["TH","th"],["e","e"],["m","m"]],"then":[["TH","th"],["e","e"],["n","n"]],"thin":[["th","th"],["i","i"],["n","n"]],"think":[["th","th"],["i","i"],["ng","n"],["k","k"]],"this":[["TH","th"],["i","i"],["s","s"]],"those":[["TH","th"],["oa","o"],["z","se"]],"today":[["t","t"],["schwa","o"],["d","d"],["ai","ay"]],"toil":[["t","t"],["oy","oi"],["l","l"]],"took":[["t","t"],["uu","oo"],["k","k"]],"top":[["t","t"],["o","o"],["p","p"]],"tops":[["t","t"],["o","o"],["p","p"],["s","s"]],"town":[["t","t"],["ow","ow"],["n","n"]],"toy":[["t","t"],["oy","oy"]],"toys":[["t","t"],["oy","oy"],["z","s"]],"trap":[["t","t"],["r","r"],["a","a"],["p","p"]],"traps":[["t","t"],["r","r"],["a","a"],["p","p"],["s","s"]],"tray":[["t","t"],["r","r"],["ai","ay"]],"trees":[["t","t"],["r","r"],["ee","ee"],["z","s"]],"trim":[["t","t"],["r","r"],["i","i"],["m","m"]],"trip":[["t","t"],["r","r"],["i","i"],["p","p"]],"true":[["t","t"],["r","r"],["oo","ue"]],"trunk":[["t","t"],["r","r"],["u","u"],["ng","n"],["k","k"]],"trunks":[["t","t"],["r","r"],["u","u"],["n","n"],["k","k"],["s","s"]],"try":[["t","t"],["r","r"],["ie","y"]],"tub":[["t","t"],["u","u"],["b","b"]],"up":[["u","u"],["p","p"]],"wants":[["w","w"],["o","a"],["n","n"],["t","t"],["s","s"]],"way":[["w","w"],["ai","ay"]],"well":[["w","w"],["e","e"],["l","ll"]],"went":[["w","w"],["e","e"],["n","n"],["t","t"]],"why":[["w","wh"],["ie","y"]],"win":[["w","w"],["i","i"],["n","n"]],"wish":[["w","w"],["i","i"],["sh","sh"]],"wool":[["w","w"],["uu","oo"],["l","l"]],"working":[["w","w"],["ur","or"],["k","k"],["i","i"],["ng","ng"]],"year":[["y","y"],["eer","ear"]]};
 </script>
 <script>
 // Session flow, persistence, code import, reporting, template printing.
@@ -1506,6 +1576,7 @@ const App = (() => {
     }
     db.stu = code.stu;
     db.lastCodeDate = code.genDate;
+    db.seg = !!code.seg;   // segmentation ladder — Spelling Mastery decks only
     let added = 0, seeded = 0, overridden = 0;
     for (const e of code.entries) {
       const existing = db.items[e.id];
@@ -1624,6 +1695,146 @@ const App = (() => {
     } catch (e) { /* no speech support */ }
   }
 
+  // ---------- segmentation ladder ----------
+  // A NEW segmentable word (reps===0, present in SEG_DATA) climbs a 4-stage
+  // ladder before joining normal review: 0 say-the-sounds, 1 sound->letters
+  // (walks every sound), 2 spell, 3 write. SEG_THRESHOLD correct exposures
+  // advance a stage; a wrong resets the current stage's count. One stage-
+  // exposure per session per word. Passing "write" grades the word correct so
+  // it enters the normal scheduler. State lives on target.seg = {st, c}.
+  const SEG_STAGES = ['sounds', 'letters', 'spell', 'write'];
+  const SEG_STAGE_NAMES = ['Say the sounds', 'Sounds → letters', 'Spell it', 'Write it'];
+  let segQueue = [], segIdx = 0, segWalk = null;
+
+  function segSounds(word) {
+    return (typeof SEG_DATA !== 'undefined' && SEG_DATA[word.toLowerCase()]) || null;
+  }
+  // The ladder runs only for decks that opted in (db.seg, set from the code's
+  // 'seg' flag — Spelling Mastery only). A new word (reps 0) with sound data
+  // then climbs the ladder before it enters normal review.
+  function inLadder(id, word) {
+    const it = db.items[id];
+    return !!(db.seg && it && it.reps === 0 && segSounds(word));
+  }
+
+  // Audio: recorded phoneme clips (SEG_AUDIO[code], Phase 2) when present; until
+  // then a spoken stand-in (slow word / the letters) so the button always helps.
+  function playClip(code) {
+    if (typeof SEG_AUDIO !== 'undefined' && SEG_AUDIO[code]) {
+      try { new Audio(SEG_AUDIO[code]).play(); return true; } catch (e) {}
+    }
+    return false;
+  }
+  function hearSounds(word) {
+    const sounds = segSounds(word) || [];
+    if (typeof SEG_AUDIO !== 'undefined' && sounds.length && sounds.every(s => SEG_AUDIO[s[0]])) {
+      let i = 0;
+      const step = () => { if (i < sounds.length) { playClip(sounds[i][0]); i++; setTimeout(step, 750); } };
+      step();
+    } else {
+      try { speechSynthesis.cancel(); utter(word, 0.45); } catch (e) {}   // slow word (placeholder)
+    }
+  }
+  function hearOneSound(s) {
+    if (!playClip(s[0])) { try { speechSynthesis.cancel(); utter(s[1], 0.6); } catch (e) {} }
+  }
+
+  function startLadder() { segIdx = 0; showSeg(); }
+
+  function showSeg() {
+    if (segIdx >= segQueue.length) { startNormal(); return; }
+    const it = segQueue[segIdx];
+    const tgt = db.items[it.id];
+    if (!tgt.seg) { tgt.seg = { st: 0, c: 0 }; save(); }
+    $('seg-count').textContent = 'New word ' + (segIdx + 1) + ' of ' + segQueue.length;
+    $('seg-stagebar').innerHTML = SEG_STAGE_NAMES.map((n, i) =>
+      '<span class="seg-step' + (i === tgt.seg.st ? ' on' : i < tgt.seg.st ? ' done' : '') + '">' + n + '</span>'
+    ).join('');
+    $('seg-answer').classList.add('hidden');
+    segWalk = null;
+    const stage = SEG_STAGES[tgt.seg.st];
+    if (stage === 'sounds') renderSegSounds(it.word);
+    else if (stage === 'letters') { segWalk = { i: 0, allRight: true, sounds: segSounds(it.word) }; showLetterStep(it.word); }
+    else if (stage === 'spell') renderSegSpell(it.word);
+    else renderSegWrite(it.word);
+    show('scr-seg');
+  }
+
+  function segReveal(html) {
+    const btn = $('btn-seg-reveal'), ans = $('seg-answer');
+    ans.classList.add('hidden');
+    btn.classList.remove('hidden');
+    btn.onclick = () => { ans.innerHTML = html; ans.classList.remove('hidden'); };
+  }
+
+  function renderSegSounds(word) {
+    const sounds = segSounds(word);
+    $('seg-prompt').innerHTML = 'Say <b>all the sounds</b> in <span class="seg-word">' + word + '</span>.';
+    $('btn-seg-hear').classList.remove('hidden');
+    $('btn-seg-hear').textContent = '🔊 Hear the sounds';
+    $('btn-seg-hear').onclick = () => hearSounds(word);
+    segReveal(sounds.map(s => '<span class="seg-chip">' + s[1] + '</span>').join('<span class="seg-dot">·</span>'));
+    $('btn-seg-reveal').textContent = 'See the sounds';
+  }
+
+  function showLetterStep(word) {
+    const s = segWalk.sounds[segWalk.i];
+    const ord = segWalk.i === 0 ? 'first' : (segWalk.i === segWalk.sounds.length - 1 ? 'last' : 'next');
+    $('seg-prompt').innerHTML = 'Sound ' + (segWalk.i + 1) + ' of ' + segWalk.sounds.length + ' in ' +
+      '<span class="seg-word">' + word + '</span> — what letter or letters make the <b>' + ord + '</b> sound?';
+    $('btn-seg-hear').classList.remove('hidden');
+    $('btn-seg-hear').textContent = '🔊 Hear this sound';
+    $('btn-seg-hear').onclick = () => hearOneSound(s);
+    segReveal('<span class="seg-chip big">' + s[1] + '</span>');
+    $('btn-seg-reveal').textContent = 'See the letters';
+  }
+
+  function renderSegSpell(word) {
+    $('seg-prompt').innerHTML = '<b>Spell</b> <span class="seg-word">' + word + '</span> out loud, sound by sound.';
+    $('btn-seg-hear').classList.remove('hidden');
+    $('btn-seg-hear').textContent = '🔊 Hear the word';
+    $('btn-seg-hear').onclick = () => speak(word);
+    segReveal(word.split('').join('<span class="seg-dot">·</span>'));
+    $('btn-seg-reveal').textContent = 'See the spelling';
+  }
+
+  function renderSegWrite(word) {
+    $('seg-prompt').innerHTML = '<b>Write</b> <span class="seg-word">' + word + '</span> on your paper.';
+    $('btn-seg-hear').classList.remove('hidden');
+    $('btn-seg-hear').textContent = '🔊 Hear the word';
+    $('btn-seg-hear').onclick = () => speak(word);
+    segReveal('<span class="seg-chip big">' + word + '</span>');
+    $('btn-seg-reveal').textContent = 'See the word';
+  }
+
+  function segGrade(right) {
+    const it = segQueue[segIdx];
+    const tgt = db.items[it.id];
+    if (SEG_STAGES[tgt.seg.st] === 'letters' && segWalk) {
+      if (!right) segWalk.allRight = false;
+      segWalk.i++;
+      if (segWalk.i < segWalk.sounds.length) { $('seg-answer').classList.add('hidden'); showLetterStep(it.word); return; }
+      right = segWalk.allRight;   // the stage exposure is correct only if every sound was right
+    }
+    if (right) {
+      tgt.seg.c++;
+      if (tgt.seg.c >= (CONFIG.SEG_THRESHOLD || 2)) {
+        tgt.seg.st++; tgt.seg.c = 0;
+        if (tgt.seg.st >= SEG_STAGES.length) {   // graduated the ladder
+          delete tgt.seg; save();
+          gradeItem(it.id, 3);                   // reps 0 -> 1: joins normal review
+          session.segGraduated = (session.segGraduated || 0) + 1;
+        }
+      }
+    } else {
+      tgt.seg.c = 0;   // a wrong resets progress in this stage
+    }
+    save();
+    session.segDone = (session.segDone || 0) + 1;
+    segIdx++;
+    showSeg();
+  }
+
   // ---------- screens ----------
 
   const $ = id => document.getElementById(id);
@@ -1655,6 +1866,20 @@ const App = (() => {
   function startSession() {
     session = buildSession();
     if (!session) return;
+    // New segmentable words run the segmentation ladder first; the rest go
+    // through the normal dictate -> check flow.
+    const all = session.items;
+    segQueue = all.filter(x => inLadder(x.id, x.word));
+    session.items = all.filter(x => !inLadder(x.id, x.word));
+    session.segTotal = segQueue.length;
+    if (segQueue.length) startLadder();
+    else startNormal();
+  }
+
+  function startNormal() {
+    if (!session) return;
+    if (!session.items.length) { endSession(); return; }
+    session.page = 0; session.di = 0; session.ci = 0;
     showDictate();
   }
 
@@ -1663,7 +1888,7 @@ const App = (() => {
     const overall = session.page * CONFIG.PAGE_SIZE + session.di + 1;
     $('dict-count').textContent =
       'Word ' + overall + ' of ' + session.items.length;
-    $('dict-box').textContent = '#' + (session.di + 1);
+    $('dict-box').textContent = '#' + overall;
     session.wordShownAt = Date.now();
     show('scr-dictate');
     speak(word);
@@ -1839,7 +2064,7 @@ const App = (() => {
     const overall = session.page * CONFIG.PAGE_SIZE + session.ci + 1;
     $('check-count').textContent =
       'Word ' + overall + ' of ' + session.items.length;
-    $('check-box').textContent = '#' + (session.ci + 1);
+    $('check-box').textContent = '#' + overall;
     $('word-reveal').textContent = word;
     show('scr-check');
     speakSpelled(word);
@@ -1896,7 +2121,9 @@ const App = (() => {
     const { flags, audit } = buildAudit();
     const rec = {
       d: today(), secs,
-      done: session.items.length,
+      done: session.items.length + (session.segTotal || 0),
+      seg: session.segTotal || 0,
+      segGrad: session.segGraduated || 0,
       again: session.counts.again,
       good: session.counts.good,
       easy: session.counts.easy,
@@ -1910,7 +2137,7 @@ const App = (() => {
     if (db.sessions.length > 200) db.sessions = db.sessions.slice(-200);
     pruneOldCrops();
     save();
-    $('sum-done').textContent = session.items.length;
+    $('sum-done').textContent = session.items.length + (session.segTotal || 0);
     $('sum-right').textContent = session.counts.good + session.counts.easy;
     $('sum-wrong').textContent = session.counts.again;
     renderBanner();
@@ -1942,7 +2169,8 @@ const App = (() => {
         s: Math.round((it.s || 0) * 10) / 10,
         d: Math.round((it.d || 0) * 10) / 10,
         due: it.due, reps: it.reps, lapses: it.lapses,
-        poolIdx: it.poolIdx || 0
+        poolIdx: it.poolIdx || 0,
+        seg: it.seg ? it.seg.st : null   // segmentation-ladder stage (null = not on the ladder)
       })),
       sessions: db.sessions.slice(-60)
     };
@@ -2050,6 +2278,8 @@ const App = (() => {
     $('btn-fix-speak').onclick = () =>
       session && speakSpelled(session.fixup[fixupIdx]);
     $('btn-fix-done').onclick = fixupDone;
+    $('btn-seg-right').onclick = () => segGrade(true);
+    $('btn-seg-wrong').onclick = () => segGrade(false);
     $('btn-sum-home').onclick = renderHome;
     $('btn-import').onclick = importPasted;
     $('btn-import-welcome').onclick = importPasted;

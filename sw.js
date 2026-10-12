@@ -1,12 +1,21 @@
 // Service worker for the Spelling Practice App (v3).
-const CACHE = 'spelling-app-v3.0.0';
+const CACHE = 'spelling-app-v3.0.2';
 // CACHE holds the page and is renamed every release: 'spelling-app-v' followed
 // by CONFIG.VERSION, which tools/publish_release.py checks, so an installed
 // app fetches the new page instead of serving the old one.
 // Voice clips: their own cache, NOT versioned with the app. An app update must
-// never throw away audio a family has already downloaded, and new clips can
-// be published without an app release. Same name as Voice's CACHE (audio.js),
-// and the same name 2.x used, so the move to v3 keeps every downloaded clip.
+// never throw away audio a family has already downloaded. Same name as Voice's
+// CACHE (audio.js), and the same name 2.x used, so the move to v3 kept every
+// downloaded clip.
+// 3.0.1: a clip that CHANGES reaches phones by its address, not by renaming
+// this cache. The page asks for audio/w/<word>.mp3?h=<the first 8 hex of the
+// clip's sha256> (the manifest's `hashes`, written by compile.py), so a
+// re-recorded clip is a new address: it is not in this cache and not in the
+// browser's own 10-minute copy (GitHub Pages sends max-age=600), so it is
+// fetched fresh and kept under its new address. Nothing else is fetched again.
+// The entries under the old addresses (2.x and 3.0.0 asked for the plain
+// audio/w/<word>.mp3) are left where they are: small, harmless, never asked
+// for again, so there is no sweep to get wrong.
 const AUDIO_CACHE = 'spelling-audio-v1';
 const ASSETS = ['./', './index.html', './manifest.webmanifest'];
 
@@ -21,8 +30,9 @@ self.addEventListener('install', e => {
 });
 
 // Which caches activate deletes: every cache except this version's page and
-// the audio. That clears the 2.x app's page caches and any cache the v3 trial
-// build left behind, while the voice clips stay. (Decided 2026-10-09.)
+// the audio. That clears the 2.x app's page caches, 3.0.0's page cache and any
+// cache the v3 trial build left behind, while the voice clips stay. (Decided
+// 2026-10-09.)
 function staleCaches(keys) {
   return keys.filter(k => k !== CACHE && k !== AUDIO_CACHE);
 }
@@ -69,7 +79,9 @@ function rangedResponse(buf, rangeHeader, type) {
 
 async function audioResponse(request) {
   const range = request.headers.get('range');
-  // Keyed on the plain URL: a Range header must not change which entry matches.
+  // Keyed on the full URL, ?h=<hash> included (so a changed clip is a new
+  // entry), and on the URL alone: a Range header must not change which entry
+  // matches.
   let hit = await caches.match(request.url);
   if (!hit) {
     try {

@@ -105,8 +105,10 @@ button {
 /* v3: the step screen (word tests and correction procedures) */
 .step-prompt { font-size: 22px; text-align: center; margin: 18px 0 10px; line-height: 1.45;
   word-break: break-word; }
-.say-chip { display: inline-block; font-size: 20px; padding: 2px 10px; margin: 0 2px;
-  border-radius: 8px; background: #eef3f7; border: 1px solid #c5d4e0; vertical-align: baseline; }
+/* 3.0.5: a split line ("pre + dict + ion") stays on one line; app.js sets its
+   font-size from the line's length and the width (16-30 px). Tim: "The text
+   on teh screen should just be pre + dict + ion (all on the same line...)" */
+.step-prompt.split-line { white-space: nowrap; overflow: hidden; word-break: normal; }
 .step-type input { width: 100%; font-size: 26px; padding: 12px; text-align: center;
   border: 2px solid #2d5f8a; border-radius: 10px; margin-top: 8px; letter-spacing: 1px; }
 .feedback { text-align: center; font-size: 18px; font-weight: 600; margin: 12px 0; }
@@ -194,6 +196,22 @@ button.link { width: auto; margin: 0; background: none; border: none;
 .scan-tips li { margin-bottom: 4px; }
 .scan-help-actions { display: flex; gap: 8px; }
 .scan-help-actions button { flex: 1; margin: 0; }
+
+/* 3.0.4: "Something wrong?" - a quiet link under the step and ladder
+   screens, and the problem panel over whatever screen is showing */
+.problem-link { text-align: center; margin: 24px 0 0; }
+.problem-link button.link { font-size: 15px; color: #555; }
+.problem-panel { position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 30;
+  background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center;
+  padding: 16px; overflow-y: auto; }
+.problem-box { background: #fff; border-radius: 12px; padding: 16px; width: 100%; max-width: 440px;
+  max-height: 100%; overflow-y: auto; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
+.problem-title { font-size: 20px; margin: 0 0 8px; }
+.problem-choices { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 12px; }
+.problem-opt { text-align: left; font-size: 17px; background: #eef3f7; border: 2px solid #a8c3d8; color: #1d4f78; }
+.problem-opt.on { background: #2d5f8a; border-color: #2d5f8a; color: #fff; font-weight: 600; }
+.problem-opt.on::before { content: '\2713  '; }
+.problem-box .big { margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -207,6 +225,7 @@ button.link { width: auto; margin: 0; background: none; border: none;
     <button id="menu-pages">Test pages</button>
     <button id="menu-scan">Scan new words</button>
     <button id="menu-code">Enter a code</button>
+    <button id="menu-problem">Something wrong? Tell the teacher</button>
   </nav>
 </header>
 
@@ -338,6 +357,8 @@ button.link { width: auto; margin: 0; background: none; border: none;
   </div>
   <p id="step-feedback" class="feedback hidden" role="status"></p>
   <button id="btn-step-next" class="primary big hidden">Next</button>
+  <!-- 3.0.4: opens the problem panel (#problem-panel); the step is left as it is -->
+  <p class="problem-link"><button id="btn-problem" class="link btn-problem">Something wrong?</button></p>
 </section>
 
 <section id="scr-seg" class="screen">
@@ -354,6 +375,8 @@ button.link { width: auto; margin: 0; background: none; border: none;
     <button id="btn-seg-wrong" class="g-again">&#10007; Not yet</button>
     <button id="btn-seg-right" class="g-good">&#10003; Got it</button>
   </div>
+  <!-- 3.0.4: the same link on the ladder screen (app.js wires both by class) -->
+  <p class="problem-link"><button id="btn-problem" class="link btn-problem">Something wrong?</button></p>
 </section>
 
 <section id="scr-summary" class="screen">
@@ -383,6 +406,29 @@ button.link { width: auto; margin: 0; background: none; border: none;
 </section>
 
 </main>
+
+<!-- 3.0.4: "Something wrong?" - the problem report. Opened by the link under
+     the step and ladder screens and by the menu item, from any screen.
+     "Email the teacher" opens the parent's email app with a text message to
+     the teacher (app.js sendProblem); nothing goes until they tap Send there.
+     "Cancel" closes it and changes nothing. -->
+<div id="problem-panel" class="problem-panel hidden" role="dialog" aria-modal="true" aria-labelledby="problem-title">
+  <div class="problem-box">
+    <h2 id="problem-title" class="problem-title">Something wrong?</h2>
+    <p class="hint">Tell the teacher what happened. Tap one, if it fits:</p>
+    <div class="problem-choices">
+      <button id="problem-voice" class="problem-opt" aria-pressed="false">The voice says it wrong</button>
+      <button id="problem-word" class="problem-opt" aria-pressed="false">This word looks wrong</button>
+      <button id="problem-lost" class="problem-opt" aria-pressed="false">I don't understand what to do</button>
+    </div>
+    <textarea id="problem-text" rows="3" maxlength="400" placeholder="Anything else? (optional)"></textarea>
+    <p class="hint">Your email app opens with a message to the teacher: the word
+      and step on screen, your choice and your note. Read it, then tap Send.
+      No photo and no name are sent.</p>
+    <button id="btn-problem-send" class="primary big">Email the teacher</button>
+    <button id="btn-problem-cancel" class="ghost big">Cancel</button>
+  </div>
+</div>
 
 <script>
 (function webpackUniversalModuleDefinition(root, factory) {
@@ -10504,11 +10550,24 @@ const CONFIG = {
   APP_NAME: 'Spelling Practice',
   // tools/publish_release.py refuses a release unless this, the built page and
   // sw.js's cache name ('spelling-app-v' + VERSION) all agree.
-  VERSION: '3.0.2',
+  VERSION: '3.0.5',
   // v3: the child types every answer and the app marks it (trim + lowercase).
-  // true: the dictation prompt is "Write it on your paper, then type what you
-  // wrote" (writing stays in the routine); false: "Type it".
-  WRITE_FIRST: true,
+  // false (3.0.5, 2026-10-13): the hint under each word is "Type it." and the
+  // home screen says paper and a pen are only needed for the spelling test at
+  // the end. Tim, verbatim: "Also when we get them to spell the word it says to
+  // write it on a piece of paper and then type in the spelling. SKip that. THe
+  // paper is just teh very final step when the TTS says each word, they write
+  // them on the bit of paper and then we correct them all (like a summative
+  // test) where we get them to write them all into the app."
+  // true would bring writing back into every test ("Write it down first, then
+  // type what you wrote."). The paper test itself (Procedures.paper) is not
+  // affected by this switch.
+  WRITE_FIRST: false,
+  // 3.0.5 (2026-10-13): morphographs the voice says letter by letter wherever
+  // it names one - a split part or the morphograph asked for ("i, o, n"); every
+  // other morphograph is said as a chunk. Tim: "spell out the i o n". His teach
+  // sentence for one of these is "This morphograph is spelled i, o, n."
+  SPELL_OUT_MORPHS: ['ion'],
   // v3 correction procedures (procedures.js):
   // extra morphograph tiles in a "which morphographs" question, besides the
   // word's own and the one the child used (3.0.2: real morphographs that look
@@ -13330,17 +13389,28 @@ const Rules = (() => {
 //                              'type', 'check', 'yesno' or 'choice' step,
 //                              move on; returns { right, expected, value }
 //             r.next(input)    move on from any other step
-// A step:     { id, kind, text, word, morph, ... }
-//   show      words on screen, Next
-//   teach     a morphograph or word shown AND spelled aloud: morph set =
-//             Voice.sayMorph (Tim's clip, else silent) then the letter clips;
-//             word set = the word said, spelled with the letter clips, said
+// A step:     { id, kind, text, word, morph, spoken, ... }
+//   text      Tim's full line. The screen's data-script, the test oracle,
+//             the report and the problem report all read it.
+//   spoken    (3.0.5) what the voice says on the step, when it is more than
+//             a word: see "The voice" below. app.js puts it in data-spoken
+//             and the device voice says it.
+//   show      words on screen, Next. 3.0.5: a split step (it carries
+//             `parts`) shows only "pre + dict + ion" on one line, the word
+//             under it, and the voice says the sentence
+//   teach     a morphograph or word shown AND spelled aloud. 3.0.5: an
+//             "<name> is spelled ..." step says the whole sentence: the name,
+//             "is spelled", then the letters in Tim's letter clips (app.js
+//             teachAloud). o-listen ("Listen: W.") says, spells and says W.
 //   tiles     tap tiles in order (bank), Done. hint = the tap instruction
 //   boxes     (3.0.2) type each morphograph in its own box, Check; expect =
 //             the parts in order; the value is the array of boxes. The first
-//             ask of a "which morphographs" question once the word has
-//             graduated from the tiles (Stages.whichMode, ctx.which)
-//   type      type and Check; hidden = the word is spoken, never shown
+//             ask of a "which morphographs" question in Types 1, 2 and 7
+//             once the word has graduated from the tiles (Stages.whichMode,
+//             ctx.which)
+//   type      type and Check; hidden = the answer is spoken, never shown: a
+//             hidden word (`word`, said by Tim's clip) or, 3.0.5, a hidden
+//             morphograph (`morph`, its `spoken` line says which)
 //   check     "Do any rules apply?": tick boxes (options), Done
 //   yesno     a Yes / No question; a wrong tap shows the right answer and
 //             the reason, then the walkthrough continues
@@ -13352,9 +13422,19 @@ const Rules = (() => {
 //             the process"; his flow chart: "retest without scaffolds")
 //   done      the correction is over (ok = the last test was right)
 //
-// Morphograph names are never given to the device voice (it mispronounces
-// them): a step holding a `morph` never holds a `word`. Only a `word` (a real
-// word) is ever said by the device voice, plus letter names.
+// The voice (rewritten 2026-10-13 from Tim's phone test of the STU-DEMO deck:
+// "The TTS needs to say more... the TTS should say the morphographs in
+// prediction are pre + dict + ion (spell out the i o n. And just leave spaces
+// instead of saying +)"). This supersedes v3's rule that a morphograph's name
+// is never given to the device voice: a step's `spoken` line names its
+// morphographs and the device voice says it. Two rules hold for every spoken
+// line: never "plus" (" + " is said as ", "), and a morphograph listed in
+// CONFIG.SPELL_OUT_MORPHS (ion) is said letter by letter, "i, o, n",
+// wherever it is a split part or the morphograph asked for; every other
+// morphograph is said as a chunk. A whole word is still said by Tim's clip
+// (the device voice only when there is none). A clip of a morphograph's name
+// in Tim's voice (audio/m) may take over from the device voice later; there is
+// no code for that yet. A step holding a `morph` still never holds a `word`.
 const Procedures = (() => {
   const norm = s => String(s == null ? '' : s).trim().toLowerCase();
   const spaced = m => m.split('').join(' ');
@@ -13571,11 +13651,45 @@ const Procedures = (() => {
     return cands.slice(0, n).map(c => c.w).concat([W]);
   }
 
+  // ---------- 3.0.5: what the voice says (see "The voice" at the top) ----------
+  // Letters as the voice says them: "i, o, n" (an apostrophe by its name, as
+  // app.js letterNames says it).
+  const lettersSaid = str => String(str).split('').map(ch => (ch === "'" ? 'apostrophe' : ch)).join(', ');
+  // Is m one of CONFIG.SPELL_OUT_MORPHS (Tim: "spell out the i o n")?
+  function spellsOut(m, ctx) {
+    const list = cfgOf(ctx).SPELL_OUT_MORPHS;
+    return Array.isArray(list) && list.map(norm).indexOf(norm(m)) !== -1;
+  }
+  // A morphograph as the voice says it: ion -> "i, o, n"; any other as itself.
+  const saidAs = (m, ctx) => (spellsOut(m, ctx) ? lettersSaid(m) : m);
+  // Never "plus" (Tim: "just leave spaces instead of saying +").
+  const unplus = s => String(s).replace(/\s*\+\s*/g, ', ');
+  // The split line's sentence: "The morphographs in prediction are pre, dict, i, o, n."
+  const splitSpoken = (W, parts, ctx) =>
+    unplus('The morphographs in ' + W + ' are ' + parts.map(p => saidAs(p, ctx)).join(', ') + '.');
+  // A line that names morphograph m: Tim's text, and the same line spoken.
+  const morphLine = (before, m, after, ctx) => ({ text: before + m + after, spoken: unplus(before + saidAs(m, ctx) + after) });
+
   // ---------- the steps ----------
   const show = (id, text, more) => Object.assign({ id, kind: 'show', text }, more || {});
-  const teachMorph = (id, m) => ({ id, kind: 'teach', text: m + ' is spelled ' + spaced(m), morph: m, letters: m });
-  const teachWord = (id, W) => ({ id, kind: 'teach', text: W + ' is spelled ' + spaced(W), word: W, letters: W });
+  // A split step: Tim's line as the text; the screen shows parts.join(' + ')
+  // on one line (app.js), the voice says the sentence.
+  const splitShow = (id, text, W, parts, ctx) => show(id, text, { word: W, parts, spoken: splitSpoken(W, parts, ctx) });
+  // 3.0.5 (Tim: "it should say - ful is spelled f u l"): the teach steps say
+  // the sentence. A morphograph in SPELL_OUT_MORPHS is "This morphograph is
+  // spelled i, o, n.", so the voice never says the letters twice.
+  const teachMorph = (id, m, ctx) => ({ id, kind: 'teach', text: m + ' is spelled ' + spaced(m), morph: m, letters: m,
+    spoken: (spellsOut(m, ctx) ? 'This morphograph' : m) + ' is spelled ' + lettersSaid(m) + '.' });
+  const teachWord = (id, W) => ({ id, kind: 'teach', text: W + ' is spelled ' + spaced(W), word: W, letters: W,
+    spoken: W + ' is spelled ' + lettersSaid(W) + '.' });
   const typeStep = (id, text, expect, more) => Object.assign({ id, kind: 'type', text, expect }, more || {});
+  // 3.0.5: a morphograph test is hidden. The voice asks it; the screen says
+  // only "Spell the morphograph you hear." (Tim: "that instructions should all
+  // be TTS - we want them spelling the morphograph from memory").
+  function morphTest(id, before, m, after, ctx) {
+    const l = morphLine(before, m, after, ctx);
+    return typeStep(id, l.text, m, { morph: m, hidden: true, spoken: l.spoken });
+  }
   const tiles = (id, text, bank, expect, more) => Object.assign({ id, kind: 'tiles', text, bank, expect,
     hint: expect.length > 1 ? 'Tap the morphographs in order.' : 'Tap the morphograph.' }, more || {});
   const hiddenTest = (id, text, W) => typeStep(id, text, W, { word: W, hidden: true });
@@ -13603,11 +13717,14 @@ const Procedures = (() => {
   const WALK_INTRO = "Let's go through each rule in order and see if any apply.";
 
   // Ask "Spell M." until right, teaching M before each try, up to `tries`
-  // tries. Yields steps; returns true when it was right in the end.
-  function* drillMorph(idTeach, idAsk, m, tries) {
+  // tries. Yields steps; returns true when it was right in the end. 3.0.5:
+  // the ask is hidden (morphTest); for ion it is "Spell i, o, n." - Tim kept
+  // that test: "No don't skip the i-o-n test its fine that we are telling them
+  // the answer in this instance. It is around clarity".
+  function* drillMorph(idTeach, idAsk, m, tries, ctx) {
     for (let t = 0; t < tries; t++) {
-      yield teachMorph(idTeach, m);
-      const r = yield typeStep(idAsk, 'Spell ' + m + '.', m, { morph: m });
+      yield teachMorph(idTeach, m, ctx);
+      const r = yield morphTest(idAsk, 'Spell ', m, '.', ctx);
       if (r.right) return true;
     }
     return false;
@@ -13673,17 +13790,17 @@ const Procedures = (() => {
     const e = primaryOf(analysis);
     const m = e.want;
     const tries = num(cfgOf(ctx).FIXUP_MAX_TRIES, 3);
-    yield show('t1-split', splitLine(W, parts), { word: W, parts });
+    yield splitShow('t1-split', splitLine(W, parts), W, parts, ctx);
     const bank = bankFor(W, parts, e.got, ctx, m);
     // 3.0.2: the typing boxes once the word has graduated; a miss shows the
     // split and asks again with the tiles, exactly as a tiles miss does.
     let r = yield firstWhich('t1', 'What are the morphographs in ' + W + '?', bank, parts, W, ctx);
     if (!r.right) {
-      yield show('t1-split-again', splitLine(W, parts), { word: W, parts });
+      yield splitShow('t1-split-again', splitLine(W, parts), W, parts, ctx);
       yield tiles('t1-which-again', 'What are the morphographs in ' + W + '?', bank, parts, { word: W });
     }
-    r = yield typeStep('t1-morph', 'How do you spell the morphograph ' + m + '?', m, { morph: m });
-    if (!r.right) yield* drillMorph('t1-teach', 't1-morph-again', m, tries);
+    r = yield morphTest('t1-morph', 'How do you spell the morphograph ', m, '?', ctx);
+    if (!r.right) yield* drillMorph('t1-teach', 't1-morph-again', m, tries, ctx);
     return yield* finalTest('t1', W);
   }
 
@@ -13693,37 +13810,62 @@ const Procedures = (() => {
   // it. First word: deplete. Whats the first morphograh in deplete? (de) Spell
   // de. ... Repeat with incomplete, complete, etc. 3. Stage 1: Tell me the
   // morphographs in incomplete. Then: Spell incomplete."
+  // 3.0.5, Tim (2026-10-13): "The order should be identify all the
+  // morphographs in order and then spell each morphograph and then spell the
+  // word (Number 2 fix applies here too. TTS tells them to spell the com
+  // morphograph - don't have it displayed on the screen.)" So, per teaching
+  // word T: every slot's tiles first, then each part spelled from the voice
+  // alone (hidden), then T itself (hidden, t2-word-spell) - except for the
+  // child's own word, whose "Tell me the morphographs in W." and "Spell W."
+  // follow at once.
   function* spelt(analysis, ctx) {
     const W = ctx.word, parts = ctx.parts;
     const m = primaryOf(analysis).want;
     const tries = num(cfgOf(ctx).FIXUP_MAX_TRIES, 3);
     const data = (ctx && ctx.data) || { words: {} };
-    yield teachMorph('t2-teach', m);
-    const r = yield typeStep('t2-morph', 'Spell the morphograph ' + m + '.', m, { morph: m });
+    yield teachMorph('t2-teach', m, ctx);
+    const r = yield morphTest('t2-morph', 'Spell the morphograph ', m, '.', ctx);
     if (!r.right) {
       for (let t = 0; t < tries; t++) {
-        yield teachMorph('t2-teach-again', m);
-        const r2 = yield typeStep('t2-morph-again', 'Spell the morphograph ' + m + '.', m, { morph: m });
+        yield teachMorph('t2-teach-again', m, ctx);
+        const r2 = yield morphTest('t2-morph-again', 'Spell the morphograph ', m, '.', ctx);
         if (r2.right) break;
       }
     }
-    yield show('t2-intro', "Let's spell some words with the morphograph " + m + ' in it.', { morph: m });
+    const intro = morphLine("Let's spell some words with the morphograph ", m, ' in it.', ctx);
+    yield show('t2-intro', intro.text, { morph: m, spoken: intro.spoken });
     const words = teachingWords(m, W, ctx);
     for (let k = 0; k < words.length; k++) {
       const T = words[k];
       const tp = T === W ? parts : (data.words[T] || [T]);
       yield show('t2-word', (k === 0 ? 'First word: ' : 'Next word: ') + T + '.', { word: T, say: true });
+      // identify all the morphographs in order ...
       for (let i = 0; i < tp.length; i++) {
         const ord = i === 0 ? 'first' : 'next';
         const p = tp[i];
         // slice 2: the bank holds morphographs of the same kind as this slot
         const t1 = yield tiles('t2-part', "What's the " + ord + ' morphograph in ' + T + '?',
           bankForSlot(T, tp, i, ctx), [p], { word: T, single: true });
-        if (!t1.right) yield show('t2-part-show', 'The ' + ord + ' morphograph in ' + T + ' is ' + p + '.', { morph: p });
-        const s1 = yield typeStep('t2-part-spell', 'Spell ' + p + '.', p, { morph: p });
+        if (!t1.right) {
+          const said = morphLine('The ' + ord + ' morphograph in ' + T + ' is ', p, '.', ctx);
+          yield show('t2-part-show', said.text, { morph: p, spoken: said.spoken });
+        }
+      }
+      // ... then spell each morphograph, from the voice alone ...
+      for (let i = 0; i < tp.length; i++) {
+        const p = tp[i];
+        const s1 = yield morphTest('t2-part-spell', 'Spell ', p, '.', ctx);
         if (!s1.right) {
-          yield teachMorph('t2-part-teach', p);
-          yield typeStep('t2-part-spell-again', 'Spell ' + p + '.', p, { morph: p });
+          yield teachMorph('t2-part-teach', p, ctx);
+          yield morphTest('t2-part-spell-again', 'Spell ', p, '.', ctx);
+        }
+      }
+      // ... then spell the word (a teaching word only; never re-analysed)
+      if (T !== W) {
+        const w1 = yield hiddenTest('t2-word-spell', 'Spell ' + T + '.', T);
+        if (!w1.right) {
+          yield teachWord('t2-word-teach', T);
+          yield hiddenTest('t2-word-spell-again', 'Spell ' + T + '.', T);
         }
       }
     }
@@ -13732,7 +13874,7 @@ const Procedures = (() => {
     const ask = firstWhich('t2', text2, bank2, parts, W, ctx);
     const which = yield ask;
     if (!which.right) {
-      yield show('t2-split', splitLine(W, parts), { word: W, parts });
+      yield splitShow('t2-split', splitLine(W, parts), W, parts, ctx);
       // 3.0.2: a boxes miss is asked once more, with the tiles (a tiles miss
       // only shows the split, as before)
       if (ask.kind === 'boxes') yield tiles('t2-which-again', text2, bank2, parts, { word: W });
@@ -13746,7 +13888,7 @@ const Procedures = (() => {
   // through each rule in order ..." 3. Spell unusual."
   function* ruleMissed(analysis, ctx) {
     const W = ctx.word, parts = ctx.parts;
-    yield show('t3-split', splitLine(W, parts), { word: W, parts });
+    yield splitShow('t3-split', splitLine(W, parts), W, parts, ctx);
     yield* rulesCheck('t3', W, parts, ctx, true);
     return yield* finalTest('t3', W);
   }
@@ -13798,17 +13940,17 @@ const Procedures = (() => {
   function* multi(analysis, ctx) {
     const W = ctx.word, parts = ctx.parts;
     const tries = num(cfgOf(ctx).FIXUP_MAX_TRIES, 3);
-    yield show('t5-split', splitLine(W, parts), { word: W, parts });
+    yield splitShow('t5-split', splitLine(W, parts), W, parts, ctx);
     const ms = wrongMorphs(analysis, parts);
-    for (const m of (ms.length ? ms : parts)) yield* drillMorph('t5-teach', 't5-spell', m, tries);
+    for (const m of (ms.length ? ms : parts)) yield* drillMorph('t5-teach', 't5-spell', m, tries, ctx);
     yield* rulesCheck('t5', W, parts, ctx, true);
     return yield* finalTest('t5', W);
   }
   function* phonemic(analysis, ctx) {
     const W = ctx.word, parts = ctx.parts;
     const tries = num(cfgOf(ctx).FIXUP_MAX_TRIES, 3);
-    yield show('t6-split', splitLine(W, parts), { word: W, parts });
-    for (const m of Array.from(new Set(parts))) yield* drillMorph('t6-teach', 't6-spell', m, tries);
+    yield splitShow('t6-split', splitLine(W, parts), W, parts, ctx);
+    for (const m of Array.from(new Set(parts))) yield* drillMorph('t6-teach', 't6-spell', m, tries, ctx);
     yield* rulesCheck('t6', W, parts, ctx, true);
     return yield* finalTest('t6', W);
   }
@@ -13825,7 +13967,7 @@ const Procedures = (() => {
     const bank = bankFor(W, parts, null, ctx, primaryOf(analysis).want);
     const r = yield firstWhich('t7', 'What are the morphographs in ' + W + '?', bank, parts, W, ctx);
     if (!r.right) {
-      yield show('t7-split', 'The morphographs in ' + W + ' are ' + plus(parts), { word: W, parts });
+      yield splitShow('t7-split', 'The morphographs in ' + W + ' are ' + plus(parts), W, parts, ctx);
       yield tiles('t7-which-again', 'What are the morphographs in ' + W + '?', bank, parts, { word: W });
     }
     yield* rulesCheck('t7', W, parts, ctx, false);
@@ -13847,7 +13989,7 @@ const Procedures = (() => {
     const rule = e.rule;
     const k = Math.max(0, Math.min(parts.length - 2, joinOf(e)));
     const card = R && R.card(rule);
-    yield show('t8-split', splitLine(W, parts), { word: W, parts });
+    yield splitShow('t8-split', splitLine(W, parts), W, parts, ctx);
     if (card) {
       const words = R.words(rule);
       const bank = jumble(card.chunks, rule);
@@ -13893,7 +14035,7 @@ const Procedures = (() => {
     const e = primaryOf(analysis);
     const k = Math.max(0, Math.min(parts.length - 2, e.slot == null ? 0 : e.slot));
     const M = parts[k], N = parts[k + 1];
-    yield show('t9-split', splitLine(W, parts), { word: W, parts });
+    yield splitShow('t9-split', splitLine(W, parts), W, parts, ctx);
     yield* walk('t9', W, parts, ctx, { join: k, all: true });
     const R = rulesOf(ctx);
     const cvc = R ? R.isCvcMorph(M) : false;
@@ -14064,30 +14206,26 @@ const Procedures = (() => {
     return result;
   }
 
-  // One test of a word in a session.
-  //   'plain'  : hidden "Spell W." (the day's first test; a one-morphograph check)
-  //   'stage1' : tiles "Tell me the morphographs in W." then hidden "Spell W."
-  //              (an in-lesson check of a word with 2+ morphographs). 3.0.2:
-  //              the typing boxes instead of the tiles once the word has
-  //              graduated (ctx.which); a boxes miss is asked once more with
-  //              the tiles (s1-which-again), then "Spell W." as before.
-  // The `hint` is the dictation instruction (CONFIG.WRITE_FIRST).
-  // state.tilesRight: the first ask (tiles or boxes) was right.
+  // One test of a word in a session: the day's first test AND every in-lesson
+  // check - the hidden "Spell W." (x-spell), nothing else. 3.0.5, Tim
+  // (2026-10-13): "Also the exposure pattern isn't quite right. When they get
+  // it right and we keep testing them on it, it should just be the spelling."
+  // His words supersede the "Stage 1: Tell me the morphographs in ... Test this
+  // until it is answered correctly 3 times" lines of his Type 1 and 2 scripts:
+  // the in-lesson check no longer asks for the morphographs first (the old
+  // "Stage 1" form, tiles or typing boxes then the spelling, is gone with its
+  // step ids). Naming the morphographs happens only inside a correction.
+  // `parts` and `mode` are no longer read; the arguments are kept so a caller
+  // written for the old form still gets the one step.
+  // The `hint` is the dictation instruction (CONFIG.WRITE_FIRST; false since
+  // 3.0.5: "Type it.").
   function exposure(word, parts, mode, ctx) {
     const W = norm(word);
     const cfg = cfgOf(ctx);
-    const hint = cfg.WRITE_FIRST === false ? 'Type it.' : 'Write it on your paper, then type what you wrote.';
-    const state = { tilesRight: null, spellRight: null, attempt: null };
+    const hint = cfg.WRITE_FIRST === false ? 'Type it.' : 'Write it down first, then type what you wrote.';
+    const state = { spellRight: null, attempt: null };
     const gen = (function* () {
-      if (mode === 'stage1' && parts && parts.length) {
-        const text = 'Tell me the morphographs in ' + W + '.';
-        const bank = bankFor(W, parts, null, ctx);
-        const ask = firstWhich('s1', text, bank, parts, W, ctx);
-        const r = yield ask;
-        state.tilesRight = r.right;
-        if (!r.right && ask.kind === 'boxes') yield tiles('s1-which-again', text, bank, parts, { word: W });
-      }
-      const s = yield typeStep(mode === 'stage1' ? 's1-spell' : 'x-spell', 'Spell ' + W + '.', W,
+      const s = yield typeStep('x-spell', 'Spell ' + W + '.', W,
         { word: W, hidden: true, hint, dictation: true });
       state.spellRight = s.right;
       state.attempt = s.value;
@@ -14126,7 +14264,8 @@ const Procedures = (() => {
   }
 
   return { REGISTRY, start, correction, exposure, paper, bankFor, bankForSlot, teachingWords, bannedWords, teachable,
-    judge, locate, plausibility, introLessons };
+    judge, locate, plausibility, introLessons,
+    spellsOut, saidAs, lettersSaid };               // 3.0.5: what the voice says (app.js teachAloud)
 })();
 
 // ---------- item stages ----------
@@ -14160,8 +14299,11 @@ const Stages = (() => {
   // Tim (2026-10-10): "Graduate it to where they need to type in the
   // morphographs in a separate field for each morphograph." Only the FIRST
   // ask of a which question counts (its tiles or boxes form), never a retry
-  // (-which-again).
-  const FIRST_WHICH = ['t1-which', 't2-which', 't7-which', 's1-which'];
+  // (-which-again). 3.0.5: the in-lesson check no longer asks the question
+  // (it is the spelling only), so from now on only the first asks inside the
+  // Type 1, 2 and 7 corrections count towards the typing boxes, and only
+  // they show them.
+  const FIRST_WHICH = ['t1-which', 't2-which', 't7-which'];
   function isFirstWhich(id) {
     return FIRST_WHICH.indexOf(String(id == null ? '' : id).replace(/-boxes$/, '')) !== -1;
   }
@@ -14205,10 +14347,8 @@ const Stages = (() => {
   function needsSpacing(item) {
     return !item || item.stage !== 2 || !!(item.il && item.il.redo);
   }
-  // An in-lesson check: the Stage-1 form for 2+ morphographs, else plain.
-  function checkMode(parts) {
-    return parts && parts.length >= 2 ? 'stage1' : 'plain';
-  }
+  // (3.0.5: checkMode is gone - every in-lesson check is the plain hidden
+  // "Spell W.", Procedures.exposure.)
   // The ladder grade: the day's first test only (right 3, wrong 1), once per
   // day. Returns { grade: 3 | 1 | null, item }.
   function gradeFirst(item, right, day) {
@@ -14299,7 +14439,7 @@ const Stages = (() => {
     };
   }
 
-  return { needsSpacing, checkMode, gradeFirst, startSpacing, noteRestarts, afterCorrection, afterPaper,
+  return { needsSpacing, gradeFirst, startSpacing, noteRestarts, afterCorrection, afterPaper,
     noteErrors, sessionRecord, buildReport, whichMode, afterWhich, isFirstWhich, FIRST_WHICH };
 })();
 </script>
@@ -15109,6 +15249,7 @@ const AUDIO_MANIFEST = {
 "defect",
 "defection",
 "defective",
+"defer",
 "defile",
 "define",
 "defining",
@@ -15127,6 +15268,7 @@ const AUDIO_MANIFEST = {
 "deniable",
 "denial",
 "denied",
+"denies",
 "denoting",
 "dense",
 "densely",
@@ -15229,6 +15371,7 @@ const AUDIO_MANIFEST = {
 "dressing",
 "driable",
 "dried",
+"drier",
 "dries",
 "driest",
 "drily",
@@ -16555,6 +16698,8 @@ const AUDIO_MANIFEST = {
 "rushed",
 "sad",
 "sadden",
+"saddens",
+"sadder",
 "saddest",
 "sadly",
 "sadness",
@@ -17269,6 +17414,7 @@ const AUDIO_MANIFEST = {
 "world",
 "worldly",
 "worried",
+"worrier",
 "worries",
 "worry",
 "worrying",
@@ -17899,6 +18045,7 @@ const AUDIO_MANIFEST = {
 "defect": "39392b5a",
 "defection": "71801546",
 "defective": "9098f009",
+"defer": "6495b78e",
 "defile": "7836dcfe",
 "define": "2ca4f729",
 "defining": "430a9e55",
@@ -17917,6 +18064,7 @@ const AUDIO_MANIFEST = {
 "deniable": "710cb050",
 "denial": "fcd12c76",
 "denied": "66a9b41b",
+"denies": "7ff385c5",
 "denoting": "73f5f929",
 "dense": "2969d018",
 "densely": "7777a057",
@@ -18019,6 +18167,7 @@ const AUDIO_MANIFEST = {
 "dressing": "279a8776",
 "driable": "272852eb",
 "dried": "c150a243",
+"drier": "7ca69483",
 "dries": "ac5896a7",
 "driest": "726c3b46",
 "drily": "d60a48ea",
@@ -19345,6 +19494,8 @@ const AUDIO_MANIFEST = {
 "rushed": "81ba45c3",
 "sad": "c82e7483",
 "sadden": "bc8dc074",
+"saddens": "953d0d32",
+"sadder": "1a36c8f3",
 "saddest": "af302665",
 "sadly": "78e8735d",
 "sadness": "cf0003cd",
@@ -20059,6 +20210,7 @@ const AUDIO_MANIFEST = {
 "world": "8e377fe4",
 "worldly": "4fe7fa99",
 "worried": "9e8f42f8",
+"worrier": "a3fb0e99",
 "worries": "db19253c",
 "worry": "c1596006",
 "worrying": "f65fdcb5",
@@ -20183,12 +20335,22 @@ const AUDIO_MANIFEST = {
 //    that; a manifest without `hashes` gives the plain address, as before.
 //    The one-time cost: 3.0.1 changes every address once, so each phone
 //    fetches the clips it uses again, once, in the background.
-//  * v3: morphograph names (pre, plete, dict) are never given to the device
-//    voice - it mispronounces them. A morphograph is SPELLED with Tim's
-//    letter clips (sayLetters); only whole words are ever said by the
-//    device voice. Slice 2: sayMorph / spellMorph play a morphograph's name
-//    in Tim's voice when audio/m/<id>.mp3 exists (manifest key `morphs`),
-//    and stay silent when it does not.
+//  * v3 kept morphograph names (pre, plete, dict) away from the device voice.
+//    That rule is superseded (2026-10-13, Tim's phone test of 3.0.4: "The TTS
+//    needs to say more... the TTS should say the morphographs in prediction
+//    are pre + dict + ion (spell out the i o n ...)"): app.js now gives the
+//    device voice each step's `spoken` line (procedures.js), morphograph
+//    names included, never "plus", with a morphograph in
+//    CONFIG.SPELL_OUT_MORPHS (ion) said letter by letter. A morphograph is
+//    still SPELLED with Tim's letter clips (sayLetters), and a whole word is
+//    still said by his clip when there is one. sayMorph / spellMorph (Tim's
+//    own clip of a name, audio/m/<id>.mp3, manifest key `morphs`) stay for
+//    the day he records them; app.js does not call them in 3.0.5, and a clip
+//    there may take over from the device voice later (no code for that yet).
+//  * 3.0.5: say() takes an optional `onDone`, called once after the last clip
+//    of the sequence has played - never when the fallback ran, and never when
+//    a newer call took over. app.js teachAloud uses it to say "is spelled"
+//    after Tim's clip of the word.
 const Voice = (() => {
   const CACHE = 'spelling-audio-v1';
   const manifest = (typeof AUDIO_MANIFEST !== 'undefined' && AUDIO_MANIFEST) ||
@@ -20197,8 +20359,9 @@ const Voice = (() => {
   const letters = new Set(manifest.letters || []);
   const sounds = new Set(manifest.sounds || []);   // phoneme codes (segmentation ladder)
   // v3 slice 2: morphograph names in Tim's voice (audio/m/<id>.mp3), listed
-  // under the optional manifest key `morphs`. None are recorded yet: until
-  // they are, a morphograph name is simply not said (never the device voice).
+  // under the optional manifest key `morphs`. None are recorded yet. (Until
+  // 3.0.5 a name with no clip was not said at all; since 3.0.5 the device
+  // voice says it, from the step's spoken line in app.js.)
   const morphs = new Set(manifest.morphs || []);
   // Pause after every letter name when spelling, the last letter included.
   // Speed preset C on voice/Spelling Speed.html. Tim, 2026-09-15, verbatim:
@@ -20210,6 +20373,21 @@ const Voice = (() => {
   const SOUND_GAP_MS = 480;       // breath between sounds when segmenting a word
   let el = null;
   let run = 0;                    // bumps to cancel an in-flight sequence
+
+  // 3.0.4: what the app said last, for the "Something wrong?" report
+  // (app.js problemBody): a clip's path without its ?h= part
+  // (audio/w/water.mp3), or "phone voice: <text>" when the device voice spoke
+  // (app.js utter() calls notePhoneVoice). A clip is noted the moment it is
+  // handed to the player (playOne), the phone voice the moment it is asked to
+  // speak, so whichever spoke last wins. One record, kept in this tab only.
+  let last = null;
+  function noteClip(src) {
+    const s = String(src);
+    const q = s.indexOf('?');
+    last = q === -1 ? s : s.slice(0, q);
+  }
+  function notePhoneVoice(text) { last = 'phone voice: ' + String(text == null ? '' : text); }
+  function lastVoice() { return last; }
 
   // 3.0.1: { w: { water: 'ab12cd34', ... }, l: {...}, p: {...} } - the key is
   // the file name without .mp3 (for p the slug, th_v for TH).
@@ -20262,6 +20440,7 @@ const Voice = (() => {
       a.addEventListener('ended', done);
       a.addEventListener('error', fail);
       a.src = src;
+      noteClip(src);                // 3.0.4: the problem report's "Last voice"
       const p = a.play();
       if (p && p.catch) p.catch(fail);
     });
@@ -20269,7 +20448,9 @@ const Voice = (() => {
 
   // Say (mode 'word') or spell out (mode 'spell') a word. Returns true when
   // the baked voice took the job; false when it went straight to `fallback`.
-  function say(mode, word, fallback) {
+  // 3.0.5: `onDone` (optional) runs once, after the last clip has played -
+  // never after the fallback, and never when a newer call took over.
+  function say(mode, word, fallback, onDone) {
     const seq = plan(mode, word);
     if (!seq) { fallback(); return false; }
     const my = ++run;
@@ -20281,6 +20462,7 @@ const Voice = (() => {
         try { await playOne(seq[i], gap); }
         catch (e) { if (my === run) fallback(); return; }
       }
+      if (my === run && typeof onDone === 'function') onDone();
     })();
     return true;
   }
@@ -20313,9 +20495,9 @@ const Voice = (() => {
   }
 
   // v3 slice 2: say a morphograph's name with Tim's clip. Returns false (and
-  // stays silent) when the manifest has no clip for it - the device voice is
-  // never given a morphograph name. Adding audio/m/<id>.mp3 and listing it
-  // under `morphs` switches it on with no code change.
+  // stays silent) when the manifest has no clip for it. Not called by app.js
+  // since 3.0.5 (the device voice says the name, from the step's spoken line);
+  // kept, with planMorph, for Tim's own clips of the names later.
   function hasMorph(id) { return morphs.has(String(id).toLowerCase()); }
   function planMorph(id) {
     const m = String(id == null ? '' : id).toLowerCase();
@@ -20340,7 +20522,8 @@ const Voice = (() => {
   }
   // "sup is spelled s u p": the name (Tim's clip, if there is one) then the
   // letter clips. The letters are all-or-fallback as in sayLetters; the
-  // fallback says the letter names only, never the morphograph's name.
+  // fallback says the letter names only. (Not called by app.js since 3.0.5:
+  // teachAloud says the whole sentence.)
   function spellMorph(id, fallback) {
     const letterSeq = planLetters(id);
     if (!letterSeq) { if (fallback) fallback(); return false; }
@@ -20400,6 +20583,7 @@ const Voice = (() => {
   return {
     plan, planLetters, planMorph, say, sayLetters, sayMorph, spellMorph, sayseg, cancel, warmCache,
     hasWord, hasMorph, canSpell, hasSound, hasAllSounds,
+    lastVoice, notePhoneVoice,                     // 3.0.4: the problem report
     available: words.size > 0,
     wordCount: words.size,
     letterCount: letters.size,
@@ -20629,11 +20813,82 @@ const App = (() => {
       all.find(v => v.lang.startsWith('en')) || null;
   }
 
-  function utter(text, rate) {
+  // 3.0.5: `onEnd` (optional) is called when the phone has finished saying
+  // it, or could not (onend / onerror).
+  function utter(text, rate, onEnd) {
     const u = new SpeechSynthesisUtterance(text);
     if (voice) u.voice = voice;
     u.rate = rate;
+    if (onEnd) { u.onend = onEnd; u.onerror = onEnd; }
     speechSynthesis.speak(u);
+    // 3.0.4: the problem report's "Last voice" (audio.js keeps the one record)
+    try { Voice.notePhoneVoice(text); } catch (e) { /* the report only */ }
+  }
+
+  // 3.0.5: each new thing the step screen says starts a new turn; anything
+  // still waiting to follow an older one (the letters after "pre is spelled")
+  // checks its turn and stays silent when the child has moved on or pressed
+  // Hear it again. (cancel() makes some phones fire onerror on the old
+  // utterance at once, which would otherwise start its letters.)
+  let speechTurn = 0;
+  const newTurn = () => ++speechTurn;
+
+  // 3.0.5: say a step's spoken line with the device voice (Tim's phone test:
+  // "The TTS needs to say more"). `then`, when given, runs once when the line
+  // has been said (onend / onerror), at once when the phone has no speech,
+  // and at the latest after 250 ms + 60 ms per character, so a phone whose
+  // speech is off still gets the letters that follow; the timer is cleared
+  // when the phone says it has finished.
+  function speakScript(text, then) {
+    const my = newTurn();
+    let done = false, timer = null;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      if (timer) { try { clearTimeout(timer); } catch (e) { /* fine */ } timer = null; }
+      if (then && my === speechTurn) then();
+    };
+    try { Voice.cancel(); } catch (e) { /* no clip playing */ }
+    try {
+      speechSynthesis.cancel();
+      utter(String(text), 0.85, then ? finish : null);
+    } catch (e) { finish(); return; }        // no speech here: straight on
+    if (then && !done) timer = setTimeout(finish, 250 + 60 * String(text).length);
+  }
+
+  // The letters of a morphograph or word in Tim's letter clips, falling back
+  // to the device voice saying the letter names, exactly as before 3.0.5.
+  function lettersAloud(str) {
+    const my = speechTurn;
+    Voice.sayLetters(str, () => {
+      if (my !== speechTurn) return;
+      try { speechSynthesis.cancel(); utter(letterNames(str), 0.8); } catch (e) { /* no speech */ }
+    });
+  }
+
+  // 3.0.5: a teach step says the sentence, in order: the name, "is spelled",
+  // then the letters (Tim: "With the correction slides the TTS shouldn't just
+  // spell the morphograph it should say - ful is spelled f u l."). A
+  // morphograph's name is the device voice, said with "is spelled" in one
+  // breath; a morphograph in CONFIG.SPELL_OUT_MORPHS (ion) is "This
+  // morphograph is spelled", so the voice never says "eye-on" and never says
+  // its letters twice. A word's name is Tim's clip when there is one (then
+  // "is spelled" by the device voice), else the device voice says the word
+  // and "is spelled" together. The letters are Tim's letter clips. The word is
+  // not said again at the end.
+  function teachAloud(s) {
+    const letters = s.letters || s.morph || s.word || '';
+    if (s.morph) {
+      const name = Procedures.spellsOut(s.morph, { cfg: CONFIG }) ? 'This morphograph' : Procedures.saidAs(s.morph, { cfg: CONFIG });
+      speakScript(name + ' is spelled', () => lettersAloud(letters));
+      return;
+    }
+    const W = s.word;
+    const my = newTurn();
+    try { speechSynthesis.cancel(); } catch (e) { /* no speech */ }
+    Voice.say('word', W,
+      () => { if (my === speechTurn) speakScript(W + ' is spelled', () => lettersAloud(letters)); },
+      () => { if (my === speechTurn) speakScript('is spelled', () => lettersAloud(letters)); });
   }
 
   const letterNames = str => str.split('')
@@ -20659,25 +20914,21 @@ const App = (() => {
   }
 
   function speak(word) {
+    newTurn();
     try { speechSynthesis.cancel(); } catch (e) {}
     Voice.say('word', word, () => ttsWord(word));
   }
 
   function speakSpelled(word) {
+    newTurn();
     try { speechSynthesis.cancel(); } catch (e) {}
     Voice.say('spell', word, () => ttsSpelled(word));
   }
 
-  // v3: a morphograph's NAME is never given to the device voice - it
-  // mispronounces 'plete' or 'dict'. Slice 2: Tim's clip of the name when
-  // there is one (audio/m, Voice.spellMorph), then Tim's letter clips; the
-  // device voice only ever says the letter names, as the whole-job fallback.
-  function spellMorphAloud(str) {
-    try { speechSynthesis.cancel(); } catch (e) {}
-    Voice.spellMorph(str, () => {
-      try { speechSynthesis.cancel(); utter(letterNames(str), 0.8); } catch (e) {}
-    });
-  }
+  // (3.0.5: spellMorphAloud - Tim's clip of a morphograph's name, else
+  // silence, then the letter clips - is gone. v3 kept a morphograph's name
+  // away from the device voice; Tim's phone test asked for the voice to say
+  // more, so a teach step now says the whole sentence: teachAloud above.)
 
   // Every word this deck can put in front of the child: each target's whole
   // rotating pool, not just today's pick.
@@ -20846,8 +21097,11 @@ const App = (() => {
     $('home-new').textContent = pick.started;
     $('home-total').textContent = Object.keys(db.items).length;
     $('btn-start').disabled = pick.ids.length === 0;
+    // 3.0.5 (WRITE_FIRST false): no paper during practice, only for the
+    // spelling test at the end (Tim: "SKip that. THe paper is just teh very
+    // final step").
     $('home-hint').textContent = CONFIG.WRITE_FIRST === false
-      ? 'Type each word you hear. The app checks it, and fixes any mistake with you.'
+      ? 'Type each word you hear. Paper and a pen are only needed for the short spelling test at the end.'
       : 'You’ll need paper and a pen. Write each word you hear, then type it. ' +
         'The app checks it, and fixes any mistake with you. At the end there is ' +
         'a short spelling test on paper.';
@@ -20961,17 +21215,17 @@ const App = (() => {
       which: () => Stages.whichMode(id != null ? db.items[id] : null, CONFIG) };
   }
 
-  // The next entry of the lesson: a word's first test today (plain "Spell
-  // W."), or an in-lesson check ("Tell me the morphographs in W." then
-  // "Spell W." for 2+ morphographs). The queue empty -> the paper test.
+  // The next entry of the lesson: a word's first test today or an in-lesson
+  // check - both the hidden "Spell W." alone (3.0.5, Tim: "When they get it
+  // right and we keep testing them on it, it should just be the spelling.").
+  // The queue empty -> the paper test.
   function nextItem() {
     if (!session) return;
     const e = Lesson.current(session.lesson);
     if (!e) { startPaper(); return; }
     const parts = morphParts(e.word);
-    const mode = e.kind === 'check' ? Stages.checkMode(parts) : 'plain';
     flow = { mode: 'exposure', entry: e, id: e.id, word: e.word, parts, tiles: [], ticks: [], after: null, runner: null };
-    flow.runner = Procedures.exposure(e.word, parts, mode, ctx());    // ctx() after flow: it reads flow.id
+    flow.runner = Procedures.exposure(e.word, parts, 'plain', ctx());  // ctx() after flow: it reads flow.id
     session.shownAt = Date.now();
     clearFeedback();
     renderStep();
@@ -21028,33 +21282,64 @@ const App = (() => {
     f.className = 'feedback hidden';
   }
 
-  // The prompt line. A hidden word is never shown: "Spell prediction." reads
-  // "Spell 🔊." on screen (the button replays the word). data-script keeps
-  // Tim's full line for the tests and the report.
+  // 3.0.5: what a hidden step shows. The answer is never on screen, and the
+  // one replay control is #btn-step-hear "Hear it again" (Tim: "Why are their
+  // 2 hear it again buttons?" - the 🔊 that sat inside the line is gone).
+  const HIDDEN_WORD_LINE = 'Spell the word you hear.';
+  const HIDDEN_MORPH_LINE = 'Spell the morphograph you hear.';
+
+  // A split line's size: as big as fits on one line, 16 to 30 px, from the
+  // line's length and the width of #step-prompt (the window's width before
+  // the screen is showing; 360 px when neither can be read).
+  function splitFontPx(el, line) {
+    let w = 0;
+    try { w = el.clientWidth || 0; } catch (e) { w = 0; }
+    if (!w) { try { w = window.innerWidth || 0; } catch (e) { w = 0; } }
+    if (!w) w = 360;
+    const px = Math.floor(w / (Math.max(1, line.length) * 0.65));
+    return Math.max(16, Math.min(30, px));
+  }
+
+  // The prompt line. data-script keeps Tim's full line for the tests, the
+  // report and the problem report; data-spoken (3.0.5) what the voice says.
+  //   a split step (it carries parts): only "pre + dict + ion", on one line
+  //     (class split-line), the word underneath in #step-word (Tim: "The text
+  //     on teh screen should just be pre + dict + ion (all on the same
+  //     line...)")
+  //   a hidden word: "Spell the word you hear."
+  //   a hidden morphograph: "Spell the morphograph you hear." (Tim: "we want
+  //     them spelling the morphograph from memory")
+  //   anything else: Tim's line
   function setPrompt(s) {
     const el = $('step-prompt');
     el.textContent = '';
     el.setAttribute('data-script', s.text);
-    const at = (s.hidden && s.word) ? s.text.lastIndexOf(s.word) : -1;
-    if (at < 0) { el.textContent = s.text; return; }
-    const before = s.text.slice(0, at), after = s.text.slice(at + s.word.length);
-    if (before) el.appendChild(document.createTextNode(before));
-    const chip = document.createElement('button');
-    chip.className = 'say-chip';
-    chip.textContent = '🔊';
-    chip.setAttribute('aria-label', 'Hear the word');
-    chip.onclick = () => speak(s.word);
-    el.appendChild(chip);
-    if (after) el.appendChild(document.createTextNode(after));
+    el.setAttribute('data-spoken', s.spoken || '');
+    const split = s.kind === 'show' && Array.isArray(s.parts) && s.parts.length > 0;
+    el.classList.toggle('split-line', split);
+    el.style.fontSize = '';
+    if (split) {
+      const line = s.parts.join(' + ');
+      el.textContent = line;
+      el.style.fontSize = splitFontPx(el, line) + 'px';
+      return;
+    }
+    if (s.hidden && s.morph) { el.textContent = HIDDEN_MORPH_LINE; return; }
+    if (s.hidden && s.word) { el.textContent = HIDDEN_WORD_LINE; return; }
+    el.textContent = s.text;
   }
 
-  // What the speaker button (and the step's arrival) plays. Only whole words
-  // are said by the device voice; a morphograph is named only by Tim's clip
-  // (if there is one) and spelled with his letter clips.
+  // What the step's arrival (and its one replay button) plays.
+  //   a teach sentence ("<name> is spelled ...")  teachAloud
+  //   o-listen ("Listen: W.")                    the word said, spelled, said
+  //   a step with a spoken line                  the device voice says it
+  //   a step that says its word                  Tim's clip of the word (the
+  //                                              phone's voice when there is none)
   function stepAudio(s) {
     if (!s) return null;
-    if (s.kind === 'teach' && s.morph) return () => spellMorphAloud(s.morph);
+    if (s.kind === 'teach' && (s.morph || s.spoken)) return () => teachAloud(s);
     if (s.kind === 'teach' && s.word) return () => speakSpelled(s.word);
+    if (s.spoken) return () => speakScript(s.spoken);
     if (s.word && (s.hidden || s.say || s.kind === 'show' || s.kind === 'dictate' || s.kind === 'boxes' ||
         (s.kind === 'tiles' && !s.single))) {
       return () => speak(s.word);
@@ -21127,6 +21412,8 @@ const App = (() => {
     next.classList.toggle('hidden', !waits);
     next.textContent = s.kind === 'done' ? 'Next word' : 'Next';
 
+    // A new step: whatever the last one still had waiting to say is dropped.
+    newTurn();
     const play = stepAudio(s);
     $('btn-step-hear').classList.toggle('hidden', !play);
     $('btn-step-hear').onclick = () => { if (play) play(); };
@@ -21281,17 +21568,10 @@ const App = (() => {
     renderStep();
   }
 
+  // 3.0.5: an exposure (the day's first test or an in-lesson check) is the
+  // spelling alone, so its one answer is the spelling: mark it, then go on or
+  // correct it.
   function afterExposureAnswer(s, res) {
-    if (s.kind === 'tiles' || s.kind === 'boxes') {
-      // A check of a 2+ morphograph word: the tiles (or, 3.0.2, the typing
-      // boxes) first. Wrong tiles do not stop the check; the spelling decides
-      // it. Wrong boxes are asked once more with the tiles, then the spelling.
-      if (res.right) feedback('✓ Right.', true);
-      else feedback('Not quite — the morphographs in ' + flow.word + ' are: ' + flow.parts.join(' + ') + '.', false);
-      renderStep();
-      return;
-    }
-    // The spelling: mark it, then go on or correct it.
     const id = flow.id, word = flow.word, e = flow.entry;
     const state = flow.runner.state;
     if (e.kind === 'first') {
@@ -21493,6 +21773,12 @@ const App = (() => {
 
   // ---------- reporting ----------
 
+  // The longest email body the app puts into a mailto: link. sendReport puts
+  // the packed report inline below this size (else it saves a file to
+  // attach); the problem report (3.0.4) cuts its Note so the whole body is
+  // never longer. One number for both, so the two emails cannot drift apart.
+  const MAILTO_BODY_MAX = 1600;
+
   function buildReport() {
     return Stages.buildReport(db, CONFIG, Sched.deckState(db.items, CONFIG), new Date().toISOString());
   }
@@ -21507,7 +21793,7 @@ const App = (() => {
       'Exported: ' + report.exported.slice(0, 10) + '\n\n';
     const packed = await Codec.encodeReport(report);
     let body;
-    if (packed.length < 1600) {
+    if (packed.length < MAILTO_BODY_MAX) {
       body = summary + '---REPORT---\n' + packed;
     } else {
       const file = downloadReport(report);
@@ -21548,6 +21834,172 @@ const App = (() => {
       renderBanner();
     }
   }
+
+  // ---------- problem report: "Something wrong?" (3.0.4) ----------
+  // Tim, 2026-10-10: "Can we add a button for if there is a word spelled
+  // wrong, or something doesn't make sense in the app." Settled with him as a
+  // TEXT report, not a picture (2026-10-13: "Don't worry about the screenshot
+  // then"). "Something wrong?" under the step and ladder screens, and
+  // "Something wrong? Tell the teacher" in the menu, open #problem-panel:
+  // three choices, a note box, "Email the teacher" and "Cancel". Email the
+  // teacher opens the parent's own email app with a plain-text message to
+  // CONFIG.TEACHER_EMAIL, the same channel as sendReport; nothing goes until
+  // the parent reads it and taps Send there. The body is built here from what
+  // is on screen, one field per line, with one fixed line inviting the parent
+  // to attach a screenshot of their own, then the Note last, so cutting the
+  // Note to MAILTO_BODY_MAX never drops a field or that line.
+  // Never in it: the family's name for the child (the device's list of
+  // children and their names is never read here), the page photo or any
+  // picture, the practice report.
+  // Opening the panel and cancelling it change nothing in the step on screen.
+  const PROBLEM_REASONS = {
+    'problem-voice': 'The voice says it wrong',
+    'problem-word': 'This word looks wrong',
+    'problem-lost': "I don't understand what to do"
+  };
+  const PROBLEM_SCREENSHOT = 'If it helps, you can take a screenshot and attach it to this email.';
+  const PROBLEM_FIELD_MAX = 80;       // any one field's value, the Prompt aside
+  const PROBLEM_PROMPT_MAX = 300;     // Tim's longest line (Type 9) is about 180
+  let problemReason = null;           // the chosen PROBLEM_REASONS key, or null
+
+  // A string encodeURIComponent can take: a lone half of an emoji pair
+  // (possible in typed text) would make it throw, so it becomes U+FFFD.
+  function wellFormed(str) {
+    let out = '';
+    for (let i = 0; i < str.length; i++) {
+      const c = str.charCodeAt(i);
+      if (c >= 0xD800 && c <= 0xDBFF) {
+        const d = str.charCodeAt(i + 1);
+        if (d >= 0xDC00 && d <= 0xDFFF) { out += str[i] + str[i + 1]; i++; }
+        else out += '�';
+      } else if (c >= 0xDC00 && c <= 0xDFFF) {
+        out += '�';
+      } else {
+        out += str[i];
+      }
+    }
+    return out;
+  }
+  // At most `max` characters, ending in an ellipsis when cut; never splits a pair.
+  function clipText(str, max) {
+    if (str.length <= max) return str;
+    if (max <= 0) return '';
+    let cut = max - 1;
+    const c = str.charCodeAt(cut - 1);
+    if (cut > 0 && c >= 0xD800 && c <= 0xDBFF) cut--;
+    return str.slice(0, cut) + '…';
+  }
+  // One field's value: on one line, cut to `max`, '(none)' when empty.
+  function fieldText(v, max) {
+    const t = wellFormed(String(v == null ? '' : v)).replace(/\s+/g, ' ').trim();
+    return t ? clipText(t, max || PROBLEM_FIELD_MAX) : '(none)';
+  }
+
+  function activeScreen() {
+    let id = null;
+    document.querySelectorAll('.screen').forEach(el => { if (el.classList.contains('active')) id = el.id; });
+    return id;
+  }
+
+  // What the child has entered on the step but not yet checked.
+  function problemAnswer(s) {
+    if (s.kind === 'type') return $('step-input').value;
+    if (s.kind === 'boxes' && flow.boxes) {
+      const vals = flow.boxes.map(b => String(b.value).trim());
+      return vals.some(Boolean) ? vals.join(' + ') : '';
+    }
+    if (s.kind === 'tiles') return (flow.tiles || []).join(' + ');
+    return '';
+  }
+
+  // The screen, mode, word, step, prompt and answer, read from what is showing.
+  function problemContext() {
+    const screen = activeScreen();
+    const c = { screen, mode: null, word: null, step: null, prompt: null, answer: null };
+    if (screen === 'scr-seg' && segQueue[segIdx]) {
+      const it = segQueue[segIdx];
+      const tgt = db.items[it.id];
+      const st = tgt && tgt.seg ? tgt.seg.st : 0;
+      c.mode = 'ladder';
+      c.word = it.word;
+      c.step = (SEG_STAGES[st] || 'stage ' + st) + ' (ladder)';
+      c.prompt = $('seg-prompt').textContent;
+    } else if (screen === 'scr-step' && flow && flow.runner) {
+      const s = flow.runner.step();
+      c.mode = flow.mode;
+      c.word = flow.word || (s && (s.pword || s.word)) || null;
+      c.prompt = $('step-prompt').getAttribute('data-script');
+      if (s) {
+        c.step = s.id + ' (' + s.kind + ')';
+        c.answer = problemAnswer(s);
+      }
+    }
+    return c;
+  }
+
+  // The email body: the fields in Tim's order, the screenshot line, the Note
+  // last, cut so the whole body is at most MAILTO_BODY_MAX characters.
+  function problemBody(noteText) {
+    const c = problemContext();
+    const stu = fieldText(db && db.stu);
+    const lines = [
+      'Spelling app problem report - ' + stu,
+      'Reason: ' + (problemReason ? PROBLEM_REASONS[problemReason] : '(none chosen)'),
+      'Screen: ' + fieldText(c.screen),
+      'Mode: ' + fieldText(c.mode),
+      'Word: ' + fieldText(c.word),
+      'Step: ' + fieldText(c.step),
+      'Prompt: ' + fieldText(c.prompt, PROBLEM_PROMPT_MAX),
+      'Answer: ' + fieldText(c.answer),
+      'Last voice: ' + (Voice.lastVoice() ? fieldText(Voice.lastVoice()) : '(nothing played yet)'),
+      'App: ' + fieldText(CONFIG.VERSION),
+      'Deck: ' + fieldText(db && db.lastCodeDate),
+      'Student: ' + stu,
+      'Date: ' + today(),
+      PROBLEM_SCREENSHOT
+    ];
+    const head = lines.join('\n') + '\nNote: ';
+    const note = wellFormed(String(noteText == null ? '' : noteText)).replace(/\r\n?/g, '\n').trim();
+    return head + clipText(note || '(none)', MAILTO_BODY_MAX - head.length);
+  }
+
+  function paintProblemChoices() {
+    Object.keys(PROBLEM_REASONS).forEach(id => {
+      const on = id === problemReason;
+      $(id).classList.toggle('on', on);
+      $(id).setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+  }
+
+  function openProblem() {
+    $('menu').classList.add('hidden');
+    problemReason = null;
+    paintProblemChoices();
+    $('problem-text').value = '';
+    $('problem-panel').classList.remove('hidden');
+  }
+
+  function closeProblem() {
+    $('problem-panel').classList.add('hidden');
+    problemReason = null;
+    paintProblemChoices();
+  }
+
+  // One choice at a time; tapping the chosen one again clears it.
+  function chooseProblem(id) {
+    problemReason = problemReason === id ? null : id;
+    paintProblemChoices();
+  }
+
+  function sendProblem() {
+    const stu = fieldText(db && db.stu);
+    const body = problemBody($('problem-text').value);
+    closeProblem();
+    location.href = 'mailto:' + CONFIG.TEACHER_EMAIL +
+      '?subject=' + encodeURIComponent('Spelling app problem ' + stu) +
+      '&body=' + encodeURIComponent(body);
+  }
+  // ---------- end problem report ----------
 
   // ---------- import a code: pasted, opened as a link, or scanned ----------
   // v3 slice 3a: every way a practice code arrives goes through importRaw -
@@ -21800,6 +22252,13 @@ const App = (() => {
       $('code-entry').classList.remove('hidden');
       $('code-input2').focus();
     };
+    // 3.0.4: "Something wrong?" - the link under the step and ladder screens
+    // (one on each, wired by class) and the menu item, from any screen.
+    document.querySelectorAll('.btn-problem').forEach(b => { b.onclick = openProblem; });
+    $('menu-problem').onclick = () => { $('menu').classList.add('hidden'); openProblem(); };
+    Object.keys(PROBLEM_REASONS).forEach(id => { $(id).onclick = () => chooseProblem(id); });
+    $('btn-problem-send').onclick = sendProblem;
+    $('btn-problem-cancel').onclick = closeProblem;
 
     await applyHashIfAny();
     // A link opened while the app is already open in this tab changes only the
@@ -21964,6 +22423,8 @@ const App = (() => {
       document.querySelectorAll('.screen').forEach(el => { if (el.classList.contains('active')) id = el.id; });
       return id;
     },
+    // 3.0.4: the problem panel is showing
+    problemOpen() { return !$('problem-panel').classList.contains('hidden'); },
     item(id) { return db.items[id] ? JSON.parse(JSON.stringify(db.items[id])) : null; },
     sessions() { return JSON.parse(JSON.stringify(db.sessions)); },
     report() { return buildReport(); }

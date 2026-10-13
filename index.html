@@ -209,14 +209,17 @@ button.link { width: auto; margin: 0; background: none; border: none;
    opens. Shown only on a touch screen: on a laptop the keys stay in the page
    but are not displayed, and the child types on the real keyboard. Each row
    fills the width (about 29 px a key on a 320 px phone, as on the phone's
-   own keyboard); rows 2 and 3 are indented half a key. */
+   own keyboard). 3.0.10 (2026-10-13): row 2 now ends with the apostrophe
+   key (ten keys, like row 1), so it lost its half-key indent and every key
+   stays the width of a row-1 key; row 3 (seven letters and the double-width
+   Delete, nine widths) keeps its half-key indent. */
 .kb { display: none; margin: 14px -16px 0; padding: 6px 3px 8px; background: #dfe4e9;
   border-radius: 10px; -webkit-user-select: none; user-select: none;
   -webkit-touch-callout: none; touch-action: manipulation; }
 @media (pointer: coarse) { .kb { display: block; } }
 .kb-row { display: flex; gap: 3px; margin-top: 6px; }
 .kb-row:first-child { margin-top: 0; }
-.kb-row-2, .kb-row-3 { padding: 0 5%; }
+.kb-row-3 { padding: 0 5%; }
 .kb-key { flex: 1 1 0; min-width: 0; height: 46px; min-height: 46px; padding: 0; margin: 0;
   font-size: 22px; font-weight: 500; line-height: 1; color: #222; background: #fff;
   border: 1px solid #b7c0c9; border-radius: 6px; box-shadow: 0 1px 0 #98a4b0;
@@ -405,7 +408,10 @@ button.link { width: auto; margin: 0; background: none; border: none;
        coarse). Tim, 2026-10-13: "Alos can we force disable the predictive
        spelling option on the phone keyboard? It was offering me the words
        that we are trying to spell - which obviously defeats the whole
-       purpose." -->
+       purpose." 3.0.10 (2026-10-13): an apostrophe key (types the straight ',
+       labelled "apostrophe" for screen readers) is the last key of the a-l
+       row, after l; Tim: "WHt isn't there an apostrophe on the keybpaord
+       yet?" -->
   <div id="kb" class="kb hidden" role="group" aria-label="Letter keys"></div>
   <!-- 3.0.4: opens the problem panel (#problem-panel); the step is left as it is -->
   <p class="problem-link"><button id="btn-problem" class="link btn-problem">Something wrong?</button></p>
@@ -10600,7 +10606,7 @@ const CONFIG = {
   APP_NAME: 'Spelling Practice',
   // tools/publish_release.py refuses a release unless this, the built page and
   // sw.js's cache name ('spelling-app-v' + VERSION) all agree.
-  VERSION: '3.0.9',
+  VERSION: '3.0.10',
   // v3: the child types every answer and the app marks it (trim + lowercase).
   // false (3.0.5, 2026-10-13): the hint under each word is "Type it." and the
   // home screen says paper and a pen are only needed for the spelling test at
@@ -13714,7 +13720,13 @@ const Rules = (() => {
 // in Tim's voice (audio/m) may take over from the device voice later; there is
 // no code for that yet. A step holding a `morph` still never holds a `word`.
 const Procedures = (() => {
-  const norm = s => String(s == null ? '' : s).trim().toLowerCase();
+  // 3.0.10 (2026-10-13): every answer the app reads passes through norm
+  // (judge, answerValue, so the "You typed" line and the attempt the analyser
+  // sees), so a curly apostrophe (U+2019, U+2018 or U+02BC, as a laptop or a
+  // proper keyboard that "smartens" quotes may type it) is read here as the
+  // straight ' (U+0027) the app's own apostrophe key types. A word without an
+  // apostrophe is unaffected. See DESIGN.md "The apostrophe key (2026-10-13)".
+  const norm = s => String(s == null ? '' : s).trim().toLowerCase().replace(/[\u2018\u2019\u02BC]/g, "'");
   const spaced = m => m.split('').join(' ');
   const plus = parts => parts.join(' + ');
   const cfgOf = ctx => (ctx && ctx.cfg) || (typeof CONFIG !== 'undefined' ? CONFIG : {});
@@ -21835,12 +21847,21 @@ const App = (() => {
   // index.html, each typing box in renderBoxes) carries inputmode="none": the
   // phone's own keyboard, and so its suggestions, never opens, while the field
   // keeps its cursor. The child types with these keys instead (#kb): q-p,
-  // a-l, z-m, Delete, and on a typing-boxes step Next box, which does exactly
-  // what Enter does in that box. No apostrophe key: no word a child can be
-  // given has one. Built once (init); renderStep shows them on a typing step
-  // only; styles.css displays them only on a touch screen, so a laptop or a
-  // connected keyboard types as before (inputmode changes nothing for a real
-  // keyboard). Screen readers: each key is a button labelled with its letter.
+  // a-l and the apostrophe, z-m and Delete, and on a typing-boxes step Next
+  // box, which does exactly what Enter does in that box. 3.0.10 (2026-10-13):
+  // the apostrophe key. Tim, verbatim: "WHt isn't there an apostrophe on the
+  // keybpaord yet?" It is the last key of row 2, after l, where a real
+  // keyboard's apostrophe sits (right of L), so Delete stays alone at the
+  // right end of the bottom row; row 2 lost its half-key indent (styles.css)
+  // so every key stays the width of a row-1 key. It types the straight '
+  // (U+0027) through kbType, like a letter, into whichever field the keys
+  // serve; the voice never says it (its aria-label "apostrophe" is for screen
+  // readers only). A curly apostrophe typed on a real keyboard is read as the
+  // straight one by Procedures' norm. Built once (init); renderStep shows them
+  // on a typing step only; styles.css displays them only on a touch screen, so
+  // a laptop or a connected keyboard types as before (inputmode changes
+  // nothing for a real keyboard). Screen readers: each key is a button
+  // labelled with its letter (or "apostrophe", "Delete", "Next box").
   // kbTarget is the field the keys write into: #step-input on a type step,
   // the box focusBox gave the cursor, or the field the child tapped (each
   // answer field's onfocus). Nothing else is ever a target - never the
@@ -21866,6 +21887,8 @@ const App = (() => {
       const row = document.createElement('div');
       row.className = 'kb-row kb-row-' + (r + 1);
       letters.split('').forEach(ch => row.appendChild(makeKey(ch, ch, '', () => kbType(ch))));
+      // 3.0.10: the apostrophe, last in row 2 (after l), the size of a letter key
+      if (r === 1) row.appendChild(makeKey("'", 'apostrophe', 'kb-apos', () => kbType("'")));
       if (r === KB_ROWS.length - 1) row.appendChild(makeKey('⌫', 'Delete', 'kb-del', kbDelete));
       kb.appendChild(row);
     });

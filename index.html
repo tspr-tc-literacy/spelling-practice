@@ -35,6 +35,8 @@ header {
   font-size: 16px; cursor: pointer; border-bottom: 1px solid #eee;
 }
 #menu button:last-child { border-bottom: none; }
+/* 3.0.6: "Use a screenshot or photo instead", tucked under "Scan new words" */
+#menu button.menu-sub { font-size: 14px; color: #2d5f8a; padding: 8px 16px 12px 30px; }
 main { max-width: 480px; margin: 0 auto; padding: 20px 16px 40px; }
 .screen { display: none; }
 .screen.active { display: block; }
@@ -196,6 +198,33 @@ button.link { width: auto; margin: 0; background: none; border: none;
 .scan-tips li { margin-bottom: 4px; }
 .scan-help-actions { display: flex; gap: 8px; }
 .scan-help-actions button { flex: 1; margin: 0; }
+/* 3.0.6: the small link to the photo picker, under "Scan your code" and in
+   the help box ("Scan your code" itself now opens the camera) */
+.scan-pick { text-align: center; margin: -8px 0 14px; }
+.scan-pick button.link { font-size: 15px; }
+.scan-help .scan-pick { margin: 10px 0 0; }
+
+/* 3.0.6: the app's own letter keys under the answer box. The answer fields
+   carry inputmode="none", so the phone's keyboard (and its suggestions) never
+   opens. Shown only on a touch screen: on a laptop the keys stay in the page
+   but are not displayed, and the child types on the real keyboard. Each row
+   fills the width (about 29 px a key on a 320 px phone, as on the phone's
+   own keyboard); rows 2 and 3 are indented half a key. */
+.kb { display: none; margin: 14px -16px 0; padding: 6px 3px 8px; background: #dfe4e9;
+  border-radius: 10px; -webkit-user-select: none; user-select: none;
+  -webkit-touch-callout: none; touch-action: manipulation; }
+@media (pointer: coarse) { .kb { display: block; } }
+.kb-row { display: flex; gap: 3px; margin-top: 6px; }
+.kb-row:first-child { margin-top: 0; }
+.kb-row-2, .kb-row-3 { padding: 0 5%; }
+.kb-key { flex: 1 1 0; min-width: 0; height: 46px; min-height: 46px; padding: 0; margin: 0;
+  font-size: 22px; font-weight: 500; line-height: 1; color: #222; background: #fff;
+  border: 1px solid #b7c0c9; border-radius: 6px; box-shadow: 0 1px 0 #98a4b0;
+  -webkit-tap-highlight-color: transparent; }
+.kb-key:active, .kb-key.kb-down { background: #c9d6e3; }
+.kb-key.kb-del { flex: 2 1 0; background: #c9d1d9; font-size: 22px; }
+.kb-key.kb-next { font-size: 18px; font-weight: 600; color: #1d4f78; background: #eef3f7;
+  border-color: #a8c3d8; }
 
 /* 3.0.4: "Something wrong?" - a quiet link under the step and ladder
    screens, and the problem panel over whatever screen is showing */
@@ -224,6 +253,7 @@ button.link { width: auto; margin: 0; background: none; border: none;
     <button id="menu-backup">Save report file</button>
     <button id="menu-pages">Test pages</button>
     <button id="menu-scan">Scan new words</button>
+    <button id="menu-scan-pick" class="menu-sub">Use a screenshot or photo instead</button>
     <button id="menu-code">Enter a code</button>
     <button id="menu-problem">Something wrong? Tell the teacher</button>
   </nav>
@@ -231,11 +261,17 @@ button.link { width: auto; margin: 0; background: none; border: none;
 
 <div id="toast" class="hidden" role="status"></div>
 
-<!-- v3 slice 3a: the photo of a practice code (a QR code), opened by "Scan
-     your code" and "Scan new words". No camera-only attribute on purpose: an
-     iPhone then offers Take Photo or Photo Library, so a screenshot of the
-     code in the parent's email works too. The photo is only read for the
-     code (scan.js) and then let go: never kept, saved or sent. -->
+<!-- v3 slice 3a: the photo of a practice code (a QR code). The photo is only
+     read for the code (scan.js) and then let go: never kept, saved or sent.
+     3.0.6 (2026-10-13, Tim's Android test of 3.0.5: "scan new words doesn't
+     open teh camera it opens the gallery."): two pickers.
+     #scan-camera (capture="environment") opens the back camera straight away;
+     "Scan your code", the menu's "Scan new words" and the help box's "Try
+     again" open it. #scan-file has no capture attribute, so the phone offers
+     its photos (a screenshot of the code in the parent's email); the small
+     "Use a screenshot or photo instead" links open it. Both go to the same
+     reading of the code (app.js scanChosen). -->
+<input id="scan-camera" type="file" accept="image/*" capture="environment" class="file-offscreen" tabindex="-1" aria-hidden="true">
 <input id="scan-file" type="file" accept="image/*" class="file-offscreen" tabindex="-1" aria-hidden="true">
 
 <!-- v3 slice 3a: shown when a photo has no code in it, or a code that is not
@@ -247,6 +283,7 @@ button.link { width: auto; margin: 0; background: none; border: none;
     <button id="btn-scan-again" class="primary">Try again</button>
     <button id="btn-scan-close" class="ghost">Close</button>
   </div>
+  <p class="scan-pick"><button id="btn-scan-pick-help" class="link">Use a screenshot or photo instead</button></p>
 </div>
 
 <div id="req-banner" class="banner hidden">
@@ -260,10 +297,11 @@ button.link { width: auto; margin: 0; background: none; border: none;
   <h1>Welcome</h1>
   <p>This app practises spelling words chosen by your teacher.
      To load your words, scan the square code your teacher gave you (on the
-     spelling sheet or in the email): tap <strong>Scan your code</strong>,
-     then take a photo of the code, or choose a screenshot of it from your
-     photos.</p>
+     spelling sheet or in the email): tap <strong>Scan your code</strong>
+     and take a photo of the code with the camera. For a screenshot of the
+     code, tap <strong>Use a screenshot or photo instead</strong>.</p>
   <button id="btn-scan-welcome" class="primary big">Scan your code</button>
+  <p class="scan-pick"><button id="btn-scan-pick-welcome" class="link">Use a screenshot or photo instead</button></p>
   <p class="welcome-or">Or paste the whole link from your teacher's email
      into the box below, then tap <strong>Load my words</strong>.</p>
   <textarea id="code-input" rows="3"
@@ -350,13 +388,25 @@ button.link { width: auto; margin: 0; background: none; border: none;
     <p class="hint">The photo stays on this phone. It is never sent, and it is
       deleted after two weeks.</p>
   </div>
+  <!-- 3.0.6: inputmode="none" keeps the phone's own keyboard (and its word
+       suggestions) closed while the box keeps its cursor; the child types
+       with the app's letter keys (#kb, below). A laptop or a connected
+       keyboard types as before. -->
   <div id="step-type" class="step-type hidden">
-    <input id="step-input" type="text" autocomplete="off" autocorrect="off"
+    <input id="step-input" type="text" inputmode="none" autocomplete="off" autocorrect="off"
       autocapitalize="none" spellcheck="false" aria-label="Your answer">
     <button id="btn-step-check" class="primary big">Check</button>
   </div>
   <p id="step-feedback" class="feedback hidden" role="status"></p>
   <button id="btn-step-next" class="primary big hidden">Next</button>
+  <!-- 3.0.6: the app's own letter keys, built by app.js (buildKeyboard):
+       q-p, a-l, z-m, Delete, and Next box on a typing-boxes step. Shown on a
+       typing step only, and only on a touch screen (styles.css: pointer
+       coarse). Tim, 2026-10-13: "Alos can we force disable the predictive
+       spelling option on the phone keyboard? It was offering me the words
+       that we are trying to spell - which obviously defeats the whole
+       purpose." -->
+  <div id="kb" class="kb hidden" role="group" aria-label="Letter keys"></div>
   <!-- 3.0.4: opens the problem panel (#problem-panel); the step is left as it is -->
   <p class="problem-link"><button id="btn-problem" class="link btn-problem">Something wrong?</button></p>
 </section>
@@ -10550,7 +10600,7 @@ const CONFIG = {
   APP_NAME: 'Spelling Practice',
   // tools/publish_release.py refuses a release unless this, the built page and
   // sw.js's cache name ('spelling-app-v' + VERSION) all agree.
-  VERSION: '3.0.5',
+  VERSION: '3.0.6',
   // v3: the child types every answer and the app marks it (trim + lowercase).
   // false (3.0.5, 2026-10-13): the hint under each word is "Type it." and the
   // home screen says paper and a pen are only needed for the spelling test at
@@ -20620,6 +20670,11 @@ const Voice = (() => {
 // Slice 3a: a practice code can also be scanned from a photo of its QR code
 // ("Scan your code", "Scan new words"); a pasted link, an opened link and a
 // scanned code all load through one path, importRaw.
+// 3.0.6 (Tim's Android test of 3.0.5, 2026-10-13): the child types with the
+// app's own letter keys (buildKeyboard; the answer fields carry
+// inputmode="none", so the phone's keyboard and its word suggestions never
+// open), and "Scan your code" / "Scan new words" open the camera
+// (#scan-camera), with "Use a screenshot or photo instead" for the photos.
 const App = (() => {
   let db = null;           // the ACTIVE child's practice record
   let profiles = null;     // which children are on this device (profiles.js)
@@ -21402,9 +21457,13 @@ const App = (() => {
     if (s.kind === 'choice') renderChoice(s);
     $('step-photo').classList.toggle('hidden', s.kind !== 'photo');
     $('step-type').classList.toggle('hidden', s.kind !== 'type');
+    // 3.0.6: the letter keys, on a typing step only (the answer box or the
+    // typing boxes; renderBoxes above already gave the first box the keys).
+    showKeys(s.kind === 'type' || s.kind === 'boxes', s.kind === 'boxes');
     if (s.kind === 'type') {
       const inp = $('step-input');
       inp.value = '';
+      kbTarget = inp;
       try { inp.focus(); } catch (e) { /* not focusable here */ }
     }
     const next = $('btn-step-next');
@@ -21438,9 +21497,12 @@ const App = (() => {
   // morphographs in a separate field for each morphograph." Each box is made
   // here, so the phone's keyboard helpers are switched off on every one (no
   // autocorrect, autocomplete, capitals or spell check: they would fix or
-  // flag a morphograph that is not a word). Enter moves to the next box;
-  // Enter in the last one, or Check, marks the boxes - unless one is still
-  // empty, which then gets the cursor.
+  // flag a morphograph that is not a word). 3.0.6: each box also carries
+  // inputmode="none", so the phone's keyboard never opens on it; the app's
+  // letter keys type into the box with the cursor (kbTarget: the box
+  // focusBox chose, or the box the child tapped). Enter (or the Next box key)
+  // moves to the next box; Enter in the last one, or Check, marks the boxes -
+  // unless one is still empty, which then gets the cursor.
   function renderBoxes(s) {
     const row = $('boxes-row');
     row.textContent = '';
@@ -21461,9 +21523,11 @@ const App = (() => {
       inp.setAttribute('autocapitalize', 'none');
       inp.setAttribute('spellcheck', 'false');
       inp.setAttribute('enterkeyhint', i < n - 1 ? 'next' : 'done');
+      inp.setAttribute('inputmode', 'none');          // 3.0.6: the app's keys, never the phone's
       inp.setAttribute('aria-label', 'Morphograph ' + (i + 1) + ' of ' + n);
       inp.className = 'box-input';
       inp.value = '';
+      inp.onfocus = () => { kbTarget = inp; };          // a tap on a box: the keys type there
       inp.onkeydown = e => {
         if (e.key !== 'Enter') return;
         if (e.preventDefault) e.preventDefault();
@@ -21477,7 +21541,9 @@ const App = (() => {
     focusBox(inputs[0]);
   }
   function focusBox(inp) {
-    try { if (inp) inp.focus(); } catch (e) { /* not focusable here */ }
+    if (!inp) return;
+    kbTarget = inp;                                   // 3.0.6: the keys follow the cursor
+    try { inp.focus(); } catch (e) { /* not focusable here */ }
   }
   // Check (or Enter in the last box): every box filled -> the answer is the
   // boxes in order; else the first empty box gets the cursor.
@@ -21486,6 +21552,120 @@ const App = (() => {
     const empty = flow.boxes.find(b => !String(b.value).trim());
     if (empty) { feedback('Type a morphograph in every box.', false); focusBox(empty); return; }
     submit(flow.boxes.map(b => b.value));
+  }
+
+  // ---------- 3.0.6: the app's own letter keys ----------
+  // Tim's Android test of 3.0.5 (2026-10-13), verbatim: "Alos can we force
+  // disable the predictive spelling option on the phone keyboard? It was
+  // offering me the words that we are trying to spell - which obviously
+  // defeats the whole purpose." Every answer field (#step-input in
+  // index.html, each typing box in renderBoxes) carries inputmode="none": the
+  // phone's own keyboard, and so its suggestions, never opens, while the field
+  // keeps its cursor. The child types with these keys instead (#kb): q-p,
+  // a-l, z-m, Delete, and on a typing-boxes step Next box, which does exactly
+  // what Enter does in that box. No apostrophe key: no word a child can be
+  // given has one. Built once (init); renderStep shows them on a typing step
+  // only; styles.css displays them only on a touch screen, so a laptop or a
+  // connected keyboard types as before (inputmode changes nothing for a real
+  // keyboard). Screen readers: each key is a button labelled with its letter.
+  // kbTarget is the field the keys write into: #step-input on a type step,
+  // the box focusBox gave the cursor, or the field the child tapped (each
+  // answer field's onfocus). Nothing else is ever a target - never the
+  // problem note, the child's name or a paste box - and the keys do nothing
+  // while they are hidden or the problem panel is open.
+  // A key types on the finger going down (ontouchstart), not on its click:
+  // its touchstart calls preventDefault() so the tap never takes the cursor
+  // out of the field, and a phone then sends no click for that tap. A mouse,
+  // a keyboard or a screen reader presses it through onclick; a click that
+  // arrives within KB_TOUCH_CLICK_MS of a touch is that same tap, so it is
+  // ignored and no letter is typed twice.
+  let kbTarget = null;          // the answer field the keys type into
+  let kbNextRow = null;         // the row holding Next box (boxes steps only)
+  let kbTouchAt = 0;            // when a finger last went down on, or left, a key
+  const KB_TOUCH_CLICK_MS = 700;
+  const KB_ROWS = ['qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
+
+  function buildKeyboard() {
+    const kb = $('kb');
+    if (!kb || kbNextRow) return;
+    kb.textContent = '';
+    KB_ROWS.forEach((letters, r) => {
+      const row = document.createElement('div');
+      row.className = 'kb-row kb-row-' + (r + 1);
+      letters.split('').forEach(ch => row.appendChild(makeKey(ch, ch, '', () => kbType(ch))));
+      if (r === KB_ROWS.length - 1) row.appendChild(makeKey('⌫', 'Delete', 'kb-del', kbDelete));
+      kb.appendChild(row);
+    });
+    kbNextRow = document.createElement('div');
+    kbNextRow.className = 'kb-row kb-row-4 hidden';
+    kbNextRow.appendChild(makeKey('Next box →', 'Next box', 'kb-next', kbNextBox));
+    kb.appendChild(kbNextRow);
+  }
+
+  function makeKey(glyph, label, extra, act) {
+    const b = document.createElement('button');
+    b.setAttribute('type', 'button');
+    b.className = 'kb-key' + (extra ? ' ' + extra : '');
+    b.setAttribute('aria-label', label);
+    b.textContent = glyph;
+    const hold = e => { if (e && e.preventDefault) e.preventDefault(); };
+    b.onpointerdown = hold;
+    b.onmousedown = hold;
+    b.ontouchstart = e => {
+      hold(e);
+      kbTouchAt = Date.now();
+      b.classList.add('kb-down');
+      act();
+    };
+    b.ontouchend = e => { hold(e); kbTouchAt = Date.now(); b.classList.remove('kb-down'); };
+    b.ontouchcancel = () => { kbTouchAt = Date.now(); b.classList.remove('kb-down'); };
+    b.onclick = () => {
+      if (Date.now() - kbTouchAt < KB_TOUCH_CLICK_MS) return;   // the same tap, already typed
+      act();
+    };
+    return b;
+  }
+
+  // On a typing step: the keys show (Next box too on a boxes step). Anything
+  // else: hidden, and no field is theirs.
+  function showKeys(on, boxes) {
+    const kb = $('kb');
+    if (kb) kb.classList.toggle('hidden', !on);
+    if (kbNextRow) kbNextRow.classList.toggle('hidden', !(on && boxes));
+    if (!on) kbTarget = null;
+  }
+
+  function kbLive() {
+    const kb = $('kb'), panel = $('problem-panel');
+    return !!kbTarget && !!kb && !kb.classList.contains('hidden') &&
+      !(panel && !panel.classList.contains('hidden'));
+  }
+
+  // The cursor back in the field, at the end of what is typed.
+  function kbCaret() {
+    const t = kbTarget;
+    try { t.focus(); } catch (e) { /* not focusable here */ }
+    try { const n = String(t.value).length; t.setSelectionRange(n, n); } catch (e) { /* no caret here */ }
+  }
+
+  function kbType(ch) {
+    if (!kbLive()) return;
+    kbTarget.value = String(kbTarget.value == null ? '' : kbTarget.value) + ch;
+    kbCaret();
+  }
+
+  function kbDelete() {
+    if (!kbLive()) return;
+    const chars = Array.from(String(kbTarget.value == null ? '' : kbTarget.value));
+    chars.pop();
+    kbTarget.value = chars.join('');
+    kbCaret();
+  }
+
+  // Next box: exactly what Enter does in the box with the cursor.
+  function kbNextBox() {
+    if (!kbLive() || !flow || !flow.boxes || flow.boxes.indexOf(kbTarget) === -1) return;
+    kbTarget.onkeydown({ key: 'Enter' });
   }
 
   function renderSeq() {
@@ -21590,6 +21770,7 @@ const App = (() => {
     $('step-tiles').classList.add('hidden');
     $('step-boxes').classList.add('hidden');
     $('step-type').classList.add('hidden');
+    showKeys(false);                                  // 3.0.6: the keys go with the answer box
     $('btn-step-hear').classList.add('hidden');
     const box = $('step-word');
     const next = $('btn-step-next');
@@ -21667,6 +21848,7 @@ const App = (() => {
     }
     // A miss on the page: analyse it and run its correction now, then go on.
     $('step-type').classList.add('hidden');
+    showKeys(false);                                  // 3.0.6: the keys go with the answer box
     $('page-photo').classList.add('hidden');
     feedback('Word ' + s.paper + ': you wrote “' + res.value + '”. Let’s fix it.', false);
     const next = $('btn-step-next');
@@ -22046,20 +22228,27 @@ const App = (() => {
 
   // ---------- v3 slice 3a: scan a code ----------
   // Tim (2026-10-08): "Or they open the app and the update button opens the
-  // camera and they scan the qr code". "Scan your code" (Welcome) and "Scan
-  // new words" (menu) open the photo picker (#scan-file: take a photo, or
-  // choose a screenshot). scan.js reads the code on this phone; Scan.parse
-  // keeps only the practice code, and it goes through importRaw exactly as a
-  // pasted link does. The photo is only read: it is never kept, saved, put
-  // in a report or sent, and the web address in a scanned link is never
-  // opened - only the code after #C is used.
+  // camera and they scan the qr code". 3.0.6 (Tim's Android test of 3.0.5,
+  // 2026-10-13: "scan new words doesn't open teh camera it opens the
+  // gallery."): "Scan your code" (Welcome), "Scan new words" (menu) and the
+  // help box's "Try again" open the camera (#scan-camera, capture
+  // "environment"); "Use a screenshot or photo instead" (under Scan your
+  // code, under Scan new words in the menu, and in the help box) opens the
+  // photo picker (#scan-file, no capture: a screenshot of the code in the
+  // parent's email). Until 3.0.6 every button opened #scan-file, which some
+  // phones show as the gallery alone. Either way the same scanChosen reads
+  // the code on this phone; Scan.parse keeps only the practice code, and it
+  // goes through importRaw exactly as a pasted link does. The photo is only
+  // read: it is never kept, saved, put in a report or sent, and the web
+  // address in a scanned link is never opened - only the code after #C is
+  // used.
   const SCAN_FINISH_FIRST = 'Finish this practice session first - then scan the new code.';
   const SCAN_NONE = 'No code found in that photo.';
   const SCAN_TIPS = [
     'Fill the frame with the code: hold the phone close, with the whole square in the photo.',
     'Use good light, with no shadow or shine on the code.',
     'Hold the phone still while you take the photo.',
-    'Or choose a screenshot of the code from your photos.'
+    'Or tap "Use a screenshot or photo instead" and choose a screenshot of the code from your photos.'
   ];
   const SCAN_REFUSED = "This code isn't a spelling practice code.";
   const SCAN_REFUSED_TIPS = [
@@ -22086,15 +22275,17 @@ const App = (() => {
     $('scan-help').classList.remove('hidden');
   }
 
-  // "Scan your code", "Scan new words" and "Try again" all open the picker.
-  function openScanPicker() {
+  // `which`: 'scan-camera' ("Scan your code", "Scan new words", "Try again")
+  // or 'scan-file' ("Use a screenshot or photo instead").
+  function openScanPicker(which) {
     hideScanHelp();
     if (session) { setStatus(SCAN_FINISH_FIRST, true); return; }
-    try { $('scan-file').click(); } catch (e) { /* no photo picker here */ }
+    const inp = $(which === 'scan-file' ? 'scan-file' : 'scan-camera');
+    try { inp.click(); } catch (e) { /* no photo picker here */ }
   }
 
-  async function scanChosen() {
-    const inp = $('scan-file');
+  // `inp`: the file input the photo came through (#scan-camera or #scan-file).
+  async function scanChosen(inp) {
     const file = inp.files && inp.files[0];
     // Cleared every time, so the same photo can be chosen again.
     try { inp.value = ''; } catch (e) { /* fine */ }
@@ -22165,6 +22356,10 @@ const App = (() => {
       submit(v);
     };
     $('step-input').onkeydown = e => { if (e.key === 'Enter') $('btn-step-check').onclick(); };
+    // 3.0.6: the app's letter keys, built once; a tap on the answer box gives
+    // it the keys (renderStep does too, on every type step).
+    buildKeyboard();
+    $('step-input').onfocus = () => { kbTarget = $('step-input'); };
     $('btn-tile-undo').onclick = () => { if (flow) { flow.tiles.pop(); renderSeq(); } };
     $('btn-tile-done').onclick = () => { if (flow && flow.tiles.length) submit(flow.tiles.slice()); };
     $('btn-boxes-done').onclick = boxesDone;          // 3.0.2: the typing boxes
@@ -22209,11 +22404,14 @@ const App = (() => {
     document.addEventListener('visibilitychange', () => { if (!document.hidden) resync(); });
     $('btn-import').onclick = importPasted;
     $('btn-import-welcome').onclick = importPasted;
-    // Slice 3a: scanning a code.
-    $('btn-scan-welcome').onclick = openScanPicker;
-    $('btn-scan-again').onclick = openScanPicker;
+    // Slice 3a: scanning a code. 3.0.6: the camera, or the photos.
+    $('btn-scan-welcome').onclick = () => openScanPicker('scan-camera');
+    $('btn-scan-pick-welcome').onclick = () => openScanPicker('scan-file');
+    $('btn-scan-again').onclick = () => openScanPicker('scan-camera');
+    $('btn-scan-pick-help').onclick = () => openScanPicker('scan-file');
     $('btn-scan-close').onclick = hideScanHelp;
-    $('scan-file').onchange = () => scanChosen();
+    $('scan-camera').onchange = () => scanChosen($('scan-camera'));
+    $('scan-file').onchange = () => scanChosen($('scan-file'));
     document.querySelectorAll('.btn-send-report').forEach(b => {
       b.onclick = sendReport;
     });
@@ -22234,7 +22432,11 @@ const App = (() => {
     };
     $('menu-scan').onclick = () => {
       $('menu').classList.add('hidden');
-      openScanPicker();               // mid-session: "Finish this practice session first ..."
+      openScanPicker('scan-camera');  // mid-session: "Finish this practice session first ..."
+    };
+    $('menu-scan-pick').onclick = () => {
+      $('menu').classList.add('hidden');
+      openScanPicker('scan-file');    // 3.0.6: a screenshot of the code, from the photos
     };
     $('menu-code').onclick = () => {
       $('menu').classList.add('hidden');
@@ -22393,9 +22595,10 @@ const App = (() => {
       return inp.onchange();
     },
     skipPhoto() { $('btn-photo-skip').onclick(); },
-    // Slice 3a: a photo of a code "chosen" through the page's own #scan-file.
-    scanFile(file) {
-      const inp = $('scan-file');
+    // Slice 3a: a photo of a code "chosen" through the page's own #scan-file
+    // (3.0.6: or `inputId`, 'scan-camera', the camera's input).
+    scanFile(file, inputId) {
+      const inp = $(inputId || 'scan-file');
       try { inp.files = [file]; } catch (e) {        // a real browser wants a FileList
         const dt = new DataTransfer(); dt.items.add(file); inp.files = dt.files;
       }

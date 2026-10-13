@@ -10600,7 +10600,7 @@ const CONFIG = {
   APP_NAME: 'Spelling Practice',
   // tools/publish_release.py refuses a release unless this, the built page and
   // sw.js's cache name ('spelling-app-v' + VERSION) all agree.
-  VERSION: '3.0.7',
+  VERSION: '3.0.9',
   // v3: the child types every answer and the app marks it (trim + lowercase).
   // false (3.0.5, 2026-10-13): the hint under each word is "Type it." and the
   // home screen says paper and a pen are only needed for the spelling test at
@@ -13070,6 +13070,18 @@ const Analyser = (() => {
 //   whyNot(rule, word, parts, k)    Type 8: why a rule does NOT apply here
 //   card(rule)                 the rule's STM card (name, chunks)
 //
+// 3.0.8 (Marva to Tim, 2026-10-13, verbatim: "Luckily, easily and 5 other
+// words where y is its own morphograph: the app says "Y ends with a consonant
+// and y." It should say "Lucky ends with a consonant and y."" Tim: "yes
+// done"). Where the morphograph before a suffix join is ONE letter (the lone
+// y in luck + y + ly), every line names the word so far as written before
+// the join's change (lucky) in its place: joins() gives it as `written`, and
+// `name` is what every question, reason, fact, rule sentence and whyNot
+// option prints. The facts are unchanged (consonantY from the letter before
+// the y, shortCvc of the morphograph y). And (Marva, same message: "For
+// exception words it should say "editing is an exception."") whyNot's right
+// answer for an exception is "<word> is an exception".
+//
 // 3.0.7, the correction layer. Tim (phone test of 3.0.5, 2026-10-13,
 // verbatim): "I went through the word wider. I spelled it wideer. It asked me
 // if any rules applied I said no. It walked me through the final e rule. Does
@@ -13211,10 +13223,19 @@ const Rules = (() => {
       if (seg.part.endsWith('ic') && next.part === 'al' && ps[k + 2] === 'ly') rules.push('al-insertion');
       const ion = next.part === 'or' ? ionForm(segs, k, known) : null;   // 3.0.7: kept for the fix line
       if (ion) rules.push('or-ending');
+      const suffix = types[next.part] === 'suffix';
+      // 3.0.8: the word so far as written before this join's change: the
+      // surfaces before the join + the part at the join (luck + y -> lucky,
+      // wide -> wide, re + port -> report).
+      const written = segs.slice(0, k).map(s => s.surface).join('') + seg.part;
       out.push({
         k, left: seg.part, right: next.part,
-        suffix: types[next.part] === 'suffix',
+        suffix,
         sofar: segs.slice(0, k + 1).map(s => s.surface).join(''),   // the word up to this join
+        written,
+        // how every line names the morphograph before the join: itself, or,
+        // when it is one letter before a suffix (the lone y), the word so far
+        name: suffix && seg.part.length === 1 ? written : seg.part,
         seg, next, rules, ion
       });
     }
@@ -13232,6 +13253,7 @@ const Rules = (() => {
     const before = M.length >= 2 ? M[M.length - 2] : prev;
     const f = {
       left: M, right: N,
+      name: J.name || M,                               // 3.0.8: how the lines name M (lucky for the lone y)
       endsE: M.endsWith('e'),
       nextVowel: isVowel(N[0]) || N === 'y',           // the suffix y counts as a vowel
       shortCvc: isCvcMorph(M),
@@ -13314,35 +13336,40 @@ const Rules = (() => {
   };
   const ruleOf = r => (r === 'doubling-ext' ? 'doubling' : r);
 
-  // The facts, one sentence each.
-  const endsEFact = (f, n) => cap(n(f.left)) + (f.endsE ? ' ends with an e.' : ' does not end with an e.');   // a fact question's fix
-  const endsInE = (f, n) => cap(n(f.left)) + (f.endsE ? ' ends in e.' : ' does not end in e.');            // inside the rule sentence (Tim's words)
+  // The facts, one sentence each. 3.0.8: each names the morphograph before
+  // the join as f.name (lucky for the lone y of luck + y + ly; the
+  // morphograph itself everywhere else), and the cvc reason is cvcWhyNot of
+  // the name it prints ("Easy is not a short cvc morphograph: y is a vowel at
+  // the end.").
+  const endsEFact = (f, n) => cap(n(f.name)) + (f.endsE ? ' ends with an e.' : ' does not end with an e.');   // a fact question's fix
+  const endsInE = (f, n) => cap(n(f.name)) + (f.endsE ? ' ends in e.' : ' does not end in e.');            // inside the rule sentence (Tim's words)
   const vowelFact = (f, n) => (f.right === 'y' ? 'The suffix y counts as a vowel.'
     : 'The morphograph ' + n(f.right) + (f.nextVowel ? ' begins with a vowel.' : ' does not begin with a vowel.'));
-  const cvcFact = (f, n) => cap(n(f.left)) + (f.shortCvc ? ' is a short cvc morphograph.'
-    : ' is not a short cvc morphograph: ' + cvcWhyNot(f.left) + '.');
-  const yFact = (f, n) => cap(n(f.left)) + (f.consonantY ? ' ends with a consonant and y.'
+  const cvcFact = (f, n) => cap(n(f.name)) + (f.shortCvc ? ' is a short cvc morphograph.'
+    : ' is not a short cvc morphograph: ' + cvcWhyNot(f.name) + '.');
+  const yFact = (f, n) => cap(n(f.name)) + (f.consonantY ? ' ends with a consonant and y.'
     : ' does not end with a consonant and y' + (f.left.endsWith('y') ? ': it ends with a vowel and y.' : '.'));
   const iFact = (f, n) => 'The morphograph ' + n(f.right) + (f.nextI ? ' begins with i.' : ' does not begin with i.');
-  const inM = (f, n) => ' in ' + n(f.left) + ' when adding ' + n(f.right) + '.';
+  const inM = (f, n) => ' in ' + n(f.name) + ' when adding ' + n(f.right) + '.';
 
   // The word's own other rules: the facts its questions ask (in order),
   // the condition that fails when it does not apply, and the conclusion.
   function ownRule(r, f, J, W) {
     const M = f.left, N = f.right, S = J.sofar;
+    const X = f.name;                                  // 3.0.8: M as the lines name it
     if (r === 'plural-es') {
       const end = /(sh|ch)$/.test(M) ? M.slice(-2) : lastLetter(M);
-      return { facts: [n => cap(n(M)) + ' ends in ' + end + '.'],
-        not: [n => cap(n(M)) + ' does not end in s, z, sh, ch or x.'],
-        end: n => 'So we add es to ' + n(M) + ' to make the plural.' };
+      return { facts: [n => cap(n(X)) + ' ends in ' + end + '.'],
+        not: [n => cap(n(X)) + ' does not end in s, z, sh, ch or x.'],
+        end: n => 'So we add es to ' + n(X) + ' to make the plural.' };
     }
     if (r === 'plural-cy') {
-      return { facts: [n => cap(n(M)) + ' ends with a consonant and y.'],
-        not: [n => cap(n(M)) + ' does not end with a consonant and y.'],
-        end: n => 'So we change the y to i in ' + n(M) + ' and add es.' };
+      return { facts: [n => cap(n(X)) + ' ends with a consonant and y.'],
+        not: [n => cap(n(X)) + ' does not end with a consonant and y.'],
+        end: n => 'So we change the y to i in ' + n(X) + ' and add es.' };
     }
     if (r === 'plural-ves') {
-      return { facts: [n => cap(n(M)) + ' ends in ' + (M.endsWith('fe') ? 'fe' : 'f') + '.', () => 'You can hear vvv in ' + W + '.'],
+      return { facts: [n => cap(n(X)) + ' ends in ' + (M.endsWith('fe') ? 'fe' : 'f') + '.', () => 'You can hear vvv in ' + W + '.'],
         not: [() => 'You cannot hear vvv in ' + W + '.'],
         end: n => 'So we change the f to v' + inM(f, n) };
     }
@@ -13357,9 +13384,9 @@ const Rules = (() => {
         end: () => 'So we use o-r in ' + S + N + '.' };
     }
     if (r === 'en-variation') {
-      return { facts: [n => cap(n(M)) + ' ends with the letter w.', () => 'We are adding en.'],
-        not: [M.endsWith('w') ? () => 'We are not adding en.' : n => cap(n(M)) + ' does not end with the letter w.'],
-        end: n => 'So we drop the e in en when adding it to ' + n(M) + '.' };
+      return { facts: [n => cap(n(X)) + ' ends with the letter w.', () => 'We are adding en.'],
+        not: [M.endsWith('w') ? () => 'We are not adding en.' : n => cap(n(X)) + ' does not end with the letter w.'],
+        end: n => 'So we drop the e in en when adding it to ' + n(X) + '.' };
     }
     return null;
   }
@@ -13380,7 +13407,7 @@ const Rules = (() => {
     const statement = () => st;
     // o-r and al insertion are about the word so far (report + er, basic + al),
     // so their does-not-apply line names it, as their fact line does
-    const stem = (r === 'or-ending' || r === 'al-insertion') ? J.sofar : f.left;
+    const stem = (r === 'or-ending' || r === 'al-insertion') ? J.sofar : f.name;
     const notApply = n => 'So the ' + words(r) + ' rule does not apply to ' + n(stem) + ' when adding ' + n(f.right) + '.';
     const but = what => n => 'But ' + W + ' is an exception: we ' + what + inM(f, n);
     if (r === 'final-e') {
@@ -13415,43 +13442,44 @@ const Rules = (() => {
   // the question, fix(n) what a wrong answer is told (3.0.7).
   function ruleQuestions(rule, f, J, said) {
     const M = f.left, N = f.right, W = norm(J.word);
+    const X = f.name;                                  // 3.0.8: M as every line names it (lucky for the lone y)
     const out = [];
     const q = (say, yes, reason, kind, fix) => out.push({ text: say(asIs), spoken: say(said), expect: yes ? 'yes' : 'no',
       reason, join: J.k, rule, fixKind: kind, fix: fix ? { text: fix(asIs), spoken: fix(said) } : null });
     const told = ruleSentence(rule, f, J, W);
     if (rule === 'final-e') {
-      q(n => 'Does ' + n(M) + ' end with an e?', f.endsE, f.endsE ? M + ' ends in e.' : M + ' ends in ' + lastLetter(M) + '.',
+      q(n => 'Does ' + n(X) + ' end with an e?', f.endsE, f.endsE ? X + ' ends in e.' : X + ' ends in ' + lastLetter(M) + '.',
         'fact', n => endsEFact(f, n));
-      if (!f.endsE) { q(() => 'So does the final e rule apply?', false, M + ' does not end in e.', 'rule', told); return out; }
+      if (!f.endsE) { q(() => 'So does the final e rule apply?', false, X + ' does not end in e.', 'rule', told); return out; }
       q(() => 'Does the next morphograph begin with a vowel?', f.nextVowel, begins(N), 'fact', n => vowelFact(f, n));
       q(() => 'So do we drop the final e?', f.dropsE, f.dropsE
-        ? M + ' ends in e and ' + N + (N === 'y' ? ' counts as a vowel' : ' begins with a vowel') + ', so we drop the e.'
-        : (f.nextVowel ? M + ' keeps its e here: this word is an exception.' : N + ' begins with a consonant letter, so we keep the e.'),
+        ? X + ' ends in e and ' + N + (N === 'y' ? ' counts as a vowel' : ' begins with a vowel') + ', so we drop the e.'
+        : (f.nextVowel ? X + ' keeps its e here: this word is an exception.' : N + ' begins with a consonant letter, so we keep the e.'),
         'rule', told);
       return out;
     }
     if (rule === 'doubling') {
-      q(n => 'Is ' + n(M) + ' a short cvc morphograph?', f.shortCvc, f.shortCvc
-        ? M + ' is short and ends consonant-vowel-consonant.'
-        : M + ' is not a short cvc morphograph: ' + cvcWhyNot(M) + '.', 'fact', n => cvcFact(f, n));
-      if (!f.shortCvc) { q(() => 'So does the doubling rule apply?', false, M + ' is not a short cvc morphograph.', 'rule', told); return out; }
+      q(n => 'Is ' + n(X) + ' a short cvc morphograph?', f.shortCvc, f.shortCvc
+        ? X + ' is short and ends consonant-vowel-consonant.'
+        : X + ' is not a short cvc morphograph: ' + cvcWhyNot(X) + '.', 'fact', n => cvcFact(f, n));
+      if (!f.shortCvc) { q(() => 'So does the doubling rule apply?', false, X + ' is not a short cvc morphograph.', 'rule', told); return out; }
       q(() => 'Does the next morphograph begin with a vowel?', f.nextVowel, begins(N), 'fact', n => vowelFact(f, n));
       q(() => 'So do we double the final consonant?', f.doubles, f.doubles
-        ? M + ' is short cvc and ' + N + (N === 'y' ? ' counts as a vowel' : ' begins with a vowel') + ', so we double the ' + lastLetter(M) + '.'
-        : (f.nextVowel ? M + ' does not double here: this word is an exception.' : N + ' begins with a consonant letter, so we do not double.'),
+        ? X + ' is short cvc and ' + N + (N === 'y' ? ' counts as a vowel' : ' begins with a vowel') + ', so we double the ' + lastLetter(M) + '.'
+        : (f.nextVowel ? X + ' does not double here: this word is an exception.' : N + ' begins with a consonant letter, so we do not double.'),
         'rule', told);
       return out;
     }
     if (rule === 'y-to-i') {
-      const tail = M.length >= 2 ? M.slice(-2) : M;
-      q(n => 'Does ' + n(M) + ' end with a consonant and y?', f.consonantY, f.consonantY
-        ? M + ' ends with a consonant and y.'
-        : (M.endsWith('y') ? M + ' ends with a vowel and y.' : M + ' ends in ' + tail + '.'), 'fact', n => yFact(f, n));
-      if (!f.consonantY) { q(() => 'So does the y to i rule apply?', false, M + ' does not end with a consonant and y.', 'rule', told); return out; }
+      const tail = X.length >= 2 ? X.slice(-2) : X;
+      q(n => 'Does ' + n(X) + ' end with a consonant and y?', f.consonantY, f.consonantY
+        ? X + ' ends with a consonant and y.'
+        : (M.endsWith('y') ? X + ' ends with a vowel and y.' : X + ' ends in ' + tail + '.'), 'fact', n => yFact(f, n));
+      if (!f.consonantY) { q(() => 'So does the y to i rule apply?', false, X + ' does not end with a consonant and y.', 'rule', told); return out; }
       q(() => 'Does the next morphograph begin with i?', f.nextI, N + ' begins with ' + firstLetter(N) + '.', 'fact', n => iFact(f, n));
       q(() => 'So do we change the y to i?', f.changesY, f.changesY
         ? N + ' does not begin with i, so the y changes to i.'
-        : (f.nextI ? N + ' begins with i, so the y stays.' : M + ' keeps its y here: this word is an exception.'), 'rule', told);
+        : (f.nextI ? N + ' begins with i, so the y stays.' : X + ' keeps its y here: this word is an exception.'), 'rule', told);
       return out;
     }
     // The word's own other rule, asked only where it fires.
@@ -13459,14 +13487,14 @@ const Rules = (() => {
     const own = ownRule(rule, f, J, W);
     const fact = i => own && own.facts[i];
     if (rule === 'plural-es') {
-      q(n => 'Does ' + n(M) + ' end in s, z, sh, ch or x?', true, M + ' ends in ' + (/(sh|ch)$/.test(M) ? M.slice(-2) : lastLetter(M)) + '.',
+      q(n => 'Does ' + n(X) + ' end in s, z, sh, ch or x?', true, X + ' ends in ' + (/(sh|ch)$/.test(M) ? M.slice(-2) : lastLetter(M)) + '.',
         'fact', fact(0));
       q(() => 'So do we add es to make the plural?', true, 'A word that ends in s, z, sh, ch or x takes es.', 'rule', told);
     } else if (rule === 'plural-cy') {
-      q(n => 'Does ' + n(M) + ' end with a consonant and y?', true, M + ' ends with a consonant and y.', 'fact', fact(0));
+      q(n => 'Does ' + n(X) + ' end with a consonant and y?', true, X + ' ends with a consonant and y.', 'fact', fact(0));
       q(() => 'So do we change the y to i and add es?', true, 'A word that ends with a consonant and y takes ies.', 'rule', told);
     } else if (rule === 'plural-ves') {
-      q(n => 'Does ' + n(M) + ' end with f or fe?', true, M + ' ends in ' + (M.endsWith('fe') ? 'fe' : 'f') + '.', 'fact', fact(0));
+      q(n => 'Does ' + n(X) + ' end with f or fe?', true, X + ' ends in ' + (M.endsWith('fe') ? 'fe' : 'f') + '.', 'fact', fact(0));
       q(() => 'Can you hear vvv in the plural?', true, 'You can hear vvv in ' + W + '.', 'fact', fact(1));
       q(() => 'So do we change the f to v and add es?', true, 'We hear vvv, so the f changes to v.', 'rule', told);
     } else if (rule === 'al-insertion') {
@@ -13477,7 +13505,7 @@ const Rules = (() => {
       q(n => 'Does a form of ' + n(S) + ' end in i-o-n?', true, 'A form of ' + S + ' ends in i-o-n.', 'fact', fact(0));
       q(() => 'So do we use o-r?', true, 'A form ends in i-o-n, so we use o-r.', 'rule', told);
     } else if (rule === 'en-variation') {
-      q(n => 'Does ' + n(M) + ' end with the letter w?', true, M + ' ends in w.', 'fact', fact(0));
+      q(n => 'Does ' + n(X) + ' end with the letter w?', true, X + ' ends in w.', 'fact', fact(0));
       q(() => 'Are we adding en?', true, 'en comes next.', 'fact', fact(1));
       q(() => 'So do we drop the e in en?', true, 'After a w, en drops its e.', 'rule', told);
     }
@@ -13539,30 +13567,57 @@ const Rules = (() => {
   // Why a rule does NOT apply at the join parts[k] + parts[k+1]: the right
   // reason (the condition that fails) and two wrong ones (the opposite of a
   // true condition, or of the right reason).
+  // 3.0.8: every option tells the truth. tests/test_rule_corrections.mjs
+  // checks every join of every word a child can be given, for every rule
+  // that does not fire there, against the facts:
+  //   - an exception, where the conditions hold but the word's real spelling
+  //     does not apply the rule (editing, editor, nature, nameable, fryer):
+  //     the right answer is "<word> is an exception" (Marva: "For exception
+  //     words it should say "editing is an exception.""), and the two wrong
+  //     ones deny each condition ("edit is not a short cvc morphograph",
+  //     "ing begins with a consonant letter"), both false. Until 3.0.8 the
+  //     right answer was "ing begins with a consonant letter", which is false;
+  //   - where the word DOES make the rule's change at that join, recorded
+  //     under another rule (city + es: the y changes to i, the
+  //     consonant-and-y plural; knife + es: the e goes, with the f to ves),
+  //     no reason "why don't we" is true, so there is no question (null);
+  //   - f to ves where the morphograph does not end in f or fe (cave + s,
+  //     er + s in adventurers): "cave does not end with f or fe", where it
+  //     said "you cannot hear vvv in caves", which is false;
+  //   - the lone y names the word so far (lucky), as the walkthrough does.
   function whyNot(rule, word, parts, k, ctx) {
     const info = joins(word, parts, ctx);
     const J = info && info.joins[k];
     if (!J) return null;
     const f = factsAt(J, info.segs);
-    const M = f.left, N = f.right;
+    const M = f.left, N = f.right, X = f.name, W = norm(word);
     const vowelLetter = N === 'y' ? 'counts as a vowel' : 'begins with a vowel letter';
     const consLetter = 'begins with a consonant letter';
+    const exception = W + ' is an exception';
     let right, wrongs;
     if (rule === 'final-e') {
-      if (!f.endsE) { right = M + ' does not end with an e'; wrongs = [M + ' ends with an e', N + ' ' + (f.nextVowel ? consLetter : vowelLetter)]; }
-      else { right = N + ' ' + consLetter; wrongs = [M + ' does not end with an e', N + ' ' + vowelLetter]; }
+      if (f.dropsE) return null;
+      if (!f.endsE) { right = X + ' does not end with an e'; wrongs = [X + ' ends with an e', N + ' ' + (f.nextVowel ? consLetter : vowelLetter)]; }
+      else if (f.nextVowel) { right = exception; wrongs = [X + ' does not end with an e', N + ' ' + consLetter]; }
+      else { right = N + ' ' + consLetter; wrongs = [X + ' does not end with an e', N + ' ' + vowelLetter]; }
     } else if (rule === 'doubling' || rule === 'doubling-ext') {
-      if (!f.shortCvc) { right = M + ' is not a short cvc morphograph'; wrongs = [M + ' is a short cvc morphograph', N + ' ' + (f.nextVowel ? consLetter : vowelLetter)]; }
-      else { right = N + ' ' + consLetter; wrongs = [M + ' is not a short cvc morphograph', N + ' ' + vowelLetter]; }
+      if (f.doubles) return null;
+      if (!f.shortCvc) { right = X + ' is not a short cvc morphograph'; wrongs = [X + ' is a short cvc morphograph', N + ' ' + (f.nextVowel ? consLetter : vowelLetter)]; }
+      else if (f.nextVowel) { right = exception; wrongs = [X + ' is not a short cvc morphograph', N + ' ' + consLetter]; }
+      else { right = N + ' ' + consLetter; wrongs = [X + ' is not a short cvc morphograph', N + ' ' + vowelLetter]; }
     } else if (rule === 'y-to-i') {
-      if (!f.consonantY) { right = M + ' does not end with a consonant and y'; wrongs = [M + ' ends with a consonant and y', N + (f.nextI ? ' does not begin with i' : ' begins with i')]; }
-      else { right = N + ' begins with i'; wrongs = [M + ' does not end with a consonant and y', N + ' does not begin with i']; }
+      if (f.changesY) return null;
+      if (!f.consonantY) { right = X + ' does not end with a consonant and y'; wrongs = [X + ' ends with a consonant and y', N + (f.nextI ? ' does not begin with i' : ' begins with i')]; }
+      else if (!f.nextI) { right = exception; wrongs = [X + ' does not end with a consonant and y', N + ' begins with i']; }
+      else { right = N + ' begins with i'; wrongs = [X + ' does not end with a consonant and y', N + ' does not begin with i']; }
     } else if (rule === 'plural-es') {
-      right = M + ' does not end in s, z, sh, ch or x'; wrongs = [M + ' ends in s, z, sh, ch or x', 'we always add es to make a plural'];
+      right = X + ' does not end in s, z, sh, ch or x'; wrongs = [X + ' ends in s, z, sh, ch or x', 'we always add es to make a plural'];
     } else if (rule === 'or-ending') {
       right = 'no form of ' + J.sofar + ' ends in i-o-n'; wrongs = ['a form of ' + J.sofar + ' ends in i-o-n', 'we always use o-r'];
     } else if (rule === 'plural-ves') {
-      right = 'you cannot hear vvv in ' + norm(word); wrongs = ['you can hear vvv in ' + norm(word), 'we always change f to v'];
+      if (J.seg.trans === 'plural-ves') return null;
+      if (!/fe?$/.test(M)) { right = X + ' does not end with f or fe'; wrongs = [X + ' ends with f or fe', 'we always change f to v']; }
+      else { right = 'you cannot hear vvv in ' + W; wrongs = ['you can hear vvv in ' + W, 'we always change f to v']; }
     } else {
       return null;
     }
@@ -13964,6 +14019,11 @@ const Procedures = (() => {
   // er begins with a vowel. So we drop the final e in wide when adding er.").
   // A fix step carries its rule and its spoken line, never a word; a right
   // answer gets none. The wording is Rules' (rules.js).
+  // 3.0.8 (Marva's decision from Tim's 3.0.5 "that instructions should all be
+  // TTS" and his "Why isn't it all in my cloned voice?", 2026-10-13): the
+  // last silent show steps are said too, in the phone's voice, each its own
+  // text: <prefix>-none "So no rules apply." (here), <prefix>-walk (rulesCheck),
+  // Type 8's t8-rule-show and Type 9's t9-why.
   function* walk(prefix, W, parts, ctx, opts) {
     const R = rulesOf(ctx);
     if (!R) return;
@@ -13971,7 +14031,7 @@ const Procedures = (() => {
     const qs = R.walkthrough(W, parts, Object.assign({ ctx, said }, opts || {}));
     for (let i = 0; i < qs.length; i++) {
       const x = qs[i];
-      if (x.show) { yield show(prefix + '-none', x.text); continue; }
+      if (x.show) { yield show(prefix + '-none', x.text, { spoken: unplus(x.spoken == null ? x.text : x.spoken) }); continue; }
       const a = yield { id: prefix + '-q', kind: 'yesno', text: x.text, spoken: unplus(x.spoken == null ? x.text : x.spoken),
         expect: x.expect, reason: x.reason, join: x.join };
       if (a && a.right === false && x.fix) {
@@ -13994,7 +14054,7 @@ const Procedures = (() => {
     const r = yield { id: prefix + '-rules', kind: 'check', text: RULES_Q, spoken: RULES_Q,
       options: info.options, expect: info.answer, fired: info.rules, sum: plus(parts) };
     if (r.right) return true;
-    if (intro) yield show(prefix + '-walk', WALK_INTRO);
+    if (intro) yield show(prefix + '-walk', WALK_INTRO, { spoken: WALK_INTRO });   // 3.0.8: said
     yield* walk(prefix, W, parts, ctx);
     return false;
   }
@@ -14239,7 +14299,9 @@ const Procedures = (() => {
       const t = yield tiles('t8-rule', ruleQ, bank, card.chunks,
         { rule: true, hint: 'Tap the parts of the rule in order.', spoken: ruleQ });
       if (!t.right) {
-        yield show('t8-rule-show', 'The ' + words + ' rule: ' + card.chunks.join(' '));
+        // 3.0.8: said, as shown (the card's words name no morphograph)
+        const ruleLine = 'The ' + words + ' rule: ' + card.chunks.join(' ');
+        yield show('t8-rule-show', ruleLine, { spoken: unplus(ruleLine) });
         yield tiles('t8-rule-again', ruleQ, bank, card.chunks,
           { rule: true, hint: 'Tap the parts of the rule in order.', spoken: ruleQ });
       }
@@ -14257,6 +14319,9 @@ const Procedures = (() => {
         // ful does not begin with a vowel. So we keep the final e in hope
         // when adding ful."), in place of "We don't apply the ... rule
         // because ...". The options and their reasons are unchanged.
+        // 3.0.8: for an exception (editing typed editting) the right option
+        // is "editing is an exception" (Rules.whyNot); the sentence a wrong
+        // tap is told is ruleFix's, "... But editing is an exception: ...".
         if (!c.right) {
           const fix = R.ruleFix ? R.ruleFix(rule, W, parts, k, { ctx, said: m => saidAs(m, ctx) }) : null;
           yield fix
@@ -14295,9 +14360,11 @@ const Procedures = (() => {
     yield* walk('t9', W, parts, ctx, { join: k, all: true });
     const R = rulesOf(ctx);
     const cvc = R ? R.isCvcMorph(M) : false;
-    yield show('t9-why', 'The morphograph is not ' + M.slice(0, -1) + ', it is ' + M +
-      ' (even though we have dropped the e when adding ' + N + '). So we don\'t apply the doubling rule because ' +
-      M + (cvc ? ' ends in e.' : ' is not a short cvc morphograph.'));
+    // 3.0.8: said too, each morphograph as saidAs says it (ion as "i, o, n")
+    const why9 = n => 'The morphograph is not ' + M.slice(0, -1) + ', it is ' + n(M) +
+      ' (even though we have dropped the e when adding ' + n(N) + '). So we don\'t apply the doubling rule because ' +
+      n(M) + (cvc ? ' ends in e.' : ' is not a short cvc morphograph.');
+    yield show('t9-why', why9(m => m), { spoken: unplus(why9(m => saidAs(m, ctx))) });
     return yield* finalTest('t9', W);
   }
 
@@ -18164,7 +18231,7 @@ const AUDIO_MANIFEST = {
 "concern": "e7a733d6",
 "concise": "88661648",
 "conclude": "c79b6d59",
-"concur": "da80e6b6",
+"concur": "447156e9",
 "condensation": "ae656aad",
 "condense": "28c8e11b",
 "conducive": "169d7d45",
@@ -18261,7 +18328,7 @@ const AUDIO_MANIFEST = {
 "cubic": "53450fd9",
 "cubing": "b529b820",
 "cup": "86d63b01",
-"cur": "cc47f9ca",
+"cur": "ef317d26",
 "curable": "c3871474",
 "cure": "6ec5a2e0",
 "cureless": "20147924",
@@ -18877,7 +18944,7 @@ const AUDIO_MANIFEST = {
 "include": "31fcfc26",
 "income": "c18ed8aa",
 "incomplete": "bc91ba9d",
-"incur": "4f28fe79",
+"incur": "538cf550",
 "incurable": "72106c2f",
 "incurred": "e8c406a8",
 "indefinite": "774ffec3",
@@ -19588,9 +19655,9 @@ const AUDIO_MANIFEST = {
 "record": "fe65d901",
 "recover": "cd311a48",
 "recoverable": "0988741d",
-"recur": "402c5a77",
+"recur": "3beda40e",
 "recurred": "4988bf45",
-"recurring": "72b29ab8",
+"recurring": "e7100420",
 "red": "413bb19d",
 "redefine": "2331f8f1",
 "redness": "bb3d7bf8",

@@ -1,5 +1,5 @@
 // Service worker for the Spelling Practice App (v3).
-const CACHE = 'spelling-app-v3.0.10';
+const CACHE = 'spelling-app-v3.0.12';
 // CACHE holds the page and is renamed every release: 'spelling-app-v' followed
 // by CONFIG.VERSION, which tools/publish_release.py checks, so an installed
 // app fetches the new page instead of serving the old one.

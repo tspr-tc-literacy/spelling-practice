@@ -10606,7 +10606,7 @@ const CONFIG = {
   APP_NAME: 'Spelling Practice',
   // tools/publish_release.py refuses a release unless this, the built page and
   // sw.js's cache name ('spelling-app-v' + VERSION) all agree.
-  VERSION: '3.0.10',
+  VERSION: '3.0.12',
   // v3: the child types every answer and the app marks it (trim + lowercase).
   // false (3.0.5, 2026-10-13): the hint under each word is "Type it." and the
   // home screen says paper and a pen are only needed for the spelling test at
@@ -10633,6 +10633,14 @@ const CONFIG = {
   // the typing boxes (one box per morphograph); a boxes miss goes back to the
   // tiles, one right-first-try day short (Stages.afterWhich);
   BOXES_AFTER: 2,
+  // 3.0.11 (2026-10-14): days the typing boxes are right first try before
+  // that question becomes level 3, each morphograph asked by position, the
+  // word said but not shown (the screen: "What is the first morphograph?");
+  // a level-3 miss goes back to the boxes, one right-first-try day
+  // short (Stages.afterWhich). Tim: "is the next stage an unscaffolded step
+  // where they are asked to type the first morphograph in the word without
+  // being told what the morphograph is?" ... "yes, hope not hop. Build it."
+  POSITIONAL_AFTER: 2,
   // other words with the morphograph practised in Type 2, before the word itself;
   TEACH_WORDS: 2,
   // wrong final tests ("Spell W.") before the app stops re-analysing, runs the
@@ -11711,6 +11719,64 @@ const Scan = (() => {
 })();
 </script>
 <script>
+// day.js — what day it is, on this phone's own calendar (3.0.12).
+//
+// Until 3.0.12 the app read "today" off the ISO (UTC) form of the time,
+// which is the date in London's winter time, not the family's. Melbourne is
+// UTC+10 (UTC+11 in summer time), so the app's day changed at 10 or 11 in
+// the morning, not at midnight: a practice before then counted as
+// yesterday's. Marva to Tim (2026-10-14): "The app works out "today" in
+// London time, not Melbourne time, so its day changes at 11am here, not at
+// midnight ... I recommend fixing it in the next small update"; Tim: "1. Yes".
+// Every place the app decides what day it is now asks this one module:
+//   Day.local(dateOrMs)  the YYYY-MM-DD of that moment on the phone's own
+//                        calendar (getFullYear / getMonth / getDate)
+//   Day.today()          Day.local(new Date())
+//   Day.add(ymd, n)      the day n calendar days after (or before) ymd. Pure
+//                        arithmetic on the date itself (Date.UTC and the
+//                        getUTC* readers), so it never slips a day across a
+//                        summer-time change (2026-10-04, 2026-04-05) or a
+//                        month or year end.
+// An unreadable date throws a RangeError, exactly as the old UTC reading
+// did, so a damaged practice code still fails to load the way it always has.
+// Loaded right after scan.js (compile.py MODULES), before the modules that
+// ask it: codec.js, profiles.js, pages.js and app.js.
+const Day = (() => {
+  const pad2 = n => (n < 10 ? '0' : '') + n;
+  const pad4 = n => {
+    const s = String(Math.abs(n));
+    return (n < 0 ? '-' : '') + '0000'.slice(s.length) + s;
+  };
+  const ymdOf = (y, m, d) => pad4(y) + '-' + pad2(m) + '-' + pad2(d);
+  const invalid = () => new RangeError('Invalid time value');
+
+  // A Date (from any page or test context), or a number of milliseconds.
+  function local(dateOrMs) {
+    const d = (dateOrMs && typeof dateOrMs === 'object' && typeof dateOrMs.getFullYear === 'function')
+      ? dateOrMs
+      : new Date(dateOrMs == null ? Date.now() : dateOrMs);
+    if (isNaN(d.getTime())) throw invalid();
+    return ymdOf(d.getFullYear(), d.getMonth() + 1, d.getDate());
+  }
+
+  function today() {
+    return local(new Date());
+  }
+
+  // n whole days (a fraction is cut off, as Date's setDate cuts it).
+  function add(ymd, n) {
+    const m = /^\s*(\d{4})-(\d{1,2})-(\d{1,2})/.exec(String(ymd == null ? '' : ymd));
+    const k = Math.trunc(Number(n));
+    if (!m || !isFinite(k)) throw invalid();
+    const t = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + k));
+    if (isNaN(t.getTime())) throw invalid();
+    return ymdOf(t.getUTCFullYear(), t.getUTCMonth() + 1, t.getUTCDate());
+  }
+
+  return { local, today, add };
+})();
+</script>
+<script>
 // Hybrid scheduler: a word climbs a fixed ladder of exposures first;
 // FSRS takes over once it graduates off the top rung.
 //
@@ -12020,10 +12086,14 @@ const Codec = (() => {
     return null;
   }
 
+  // due = genDate + offset calendar days (genDate is the dashboard's own date,
+  // YYYY-MM-DD). 3.0.12: plain calendar arithmetic (day.js). Until 3.0.12 the
+  // offset was added on the phone's clock and read back in UTC, so an offset
+  // that spanned the start of summer time came out a day early on a
+  // Melbourne phone (2026-10-01 + 7 gave 2026-10-07, not 2026-10-08). What
+  // the code means is unchanged; only that slip is gone.
   function dueFrom(genDate, offset) {
-    const d = new Date(genDate);
-    d.setDate(d.getDate() + parseInt(offset, 10));
-    return d.toISOString().slice(0, 10);
+    return Day.add(genDate, parseInt(offset, 10));
   }
 
   function parseTarget(raw, genDate) {
@@ -12195,7 +12265,8 @@ const Profiles = (() => {
     return out;
   }
 
-  function today() { return new Date().toISOString().slice(0, 10); }
+  // 3.0.12: the phone's own calendar day (day.js), not the UTC date.
+  function today() { return Day.today(); }
 
   // The device's children. No index yet (a new device, or a damaged index):
   // start an empty list. Then (v3) any 2.x child not yet carried over is
@@ -13690,8 +13761,19 @@ const Rules = (() => {
 //             once the word has graduated from the tiles (Stages.whichMode,
 //             ctx.which)
 //   type      type and Check; hidden = the answer is spoken, never shown: a
-//             hidden word (`word`, said by Tim's clip) or, 3.0.5, a hidden
-//             morphograph (`morph`, its `spoken` line says which)
+//             hidden word (`word`; 3.0.12: its line's words before the word
+//             in the device voice, then the word in Tim's clip) or, 3.0.5, a
+//             hidden morphograph (`morph`, its `spoken` line says which).
+//             3.0.12: a hidden step shows no line on screen (app.js).
+//             3.0.11: the level-3 positional ask ("What is the first
+//             morphograph in W?", id <prefix>-pos-<i>) is a hidden type step
+//             with `word`, `pos` ('first' | 'next' | 'last'), its `spoken`
+//             line and a `screen` line that never names the word
+//   screen    (3.0.11) what the screen shows on a step, when it is neither
+//             Tim's line nor a hidden step's (empty) line: app.js setPrompt
+//             shows it (data-script keeps the text, data-spoken the spoken).
+//             Its fix step (<prefix>-pos-fix-<i>) carries `unlogged`: the
+//             runner does not write it in the run log
 //   check     "Do any rules apply?": tick boxes (options), Done
 //   yesno     a Yes / No question; a wrong tap shows the right answer and
 //             the reason, then (3.0.7) the correction: a show step
@@ -13973,9 +14055,11 @@ const Procedures = (() => {
   const teachWord = (id, W) => ({ id, kind: 'teach', text: W + ' is spelled ' + spaced(W), word: W, letters: W,
     spoken: W + ' is spelled ' + lettersSaid(W) + '.' });
   const typeStep = (id, text, expect, more) => Object.assign({ id, kind: 'type', text, expect }, more || {});
-  // 3.0.5: a morphograph test is hidden. The voice asks it; the screen says
-  // only "Spell the morphograph you hear." (Tim: "that instructions should all
-  // be TTS - we want them spelling the morphograph from memory").
+  // 3.0.5: a morphograph test is hidden. The voice asks it (Tim: "that
+  // instructions should all be TTS - we want them spelling the morphograph
+  // from memory"). 3.0.12: the screen shows no line at all for it (Tim:
+  // "Spell X (but all in TTS - nothing needs to be on the screen.)"); until
+  // then it showed a neutral line.
   function morphTest(id, before, m, after, ctx) {
     const l = morphLine(before, m, after, ctx);
     return typeStep(id, l.text, m, { morph: m, hidden: true, spoken: l.spoken });
@@ -13987,19 +14071,28 @@ const Procedures = (() => {
   // by box (trim + lower case). The word is said, as for the tiles.
   const boxes = (id, text, expect, more) => Object.assign({ id, kind: 'boxes', text, expect,
     hint: 'Type each morphograph in its box.' }, more || {});
-  // The word's mode (Stages.whichMode): 'boxes', or anything else = tiles.
-  // ctx.which is that string, or a function that reads it when the question
-  // comes up (app.js), so a boxes miss earlier in the same correction already
-  // puts the next first ask back on the tiles.
+  // The word's mode (Stages.whichMode): 'positional' (3.0.11, level 3),
+  // 'boxes' (level 2), or anything else = 'tiles' (level 1). ctx.which is that
+  // string, or a function that reads it when the question comes up (app.js),
+  // so a miss earlier in the same correction already puts the next first ask
+  // (after a re-analysis) one level down.
   function whichOf(ctx) {
     const w = ctx && ctx.which;
-    return (typeof w === 'function' ? w() : w) === 'boxes';
+    const v = typeof w === 'function' ? w() : w;
+    return v === 'positional' ? 'positional' : v === 'boxes' ? 'boxes' : 'tiles';
   }
+  // Level 3 runs only for a word of two or more morphographs: a one-part word
+  // in the positional mode stays on the boxes (there is no "first" and "last"
+  // to ask for).
+  const atLevel3 = (mode, parts) => mode === 'positional' && Array.isArray(parts) && parts.length >= 2;
   // The FIRST ask of a "which morphographs" question: the tiles (id
   // prefix + '-which'), or the typing boxes (prefix + '-which-boxes') once the
-  // word has graduated. A retry (-which-again) is always the tiles.
-  function firstWhich(prefix, text, bank, parts, W, ctx) {
-    return whichOf(ctx)
+  // word has graduated (a one-part word in the positional mode too). A retry
+  // (-which-again) is always the tiles. `mode`, when given, is the mode the
+  // procedure already read (whichOf), so it is read once per question.
+  function firstWhich(prefix, text, bank, parts, W, ctx, mode) {
+    const m = mode || whichOf(ctx);
+    return m !== 'tiles'
       ? boxes(prefix + '-which-boxes', text, parts, { word: W })
       : tiles(prefix + '-which', text, bank, parts, { word: W });
   }
@@ -14018,6 +14111,53 @@ const Procedures = (() => {
       if (r.right) return true;
     }
     return false;
+  }
+
+  // ---------- 3.0.11: level 3, each morphograph by position ----------
+  // Tim (2026-10-14): "is the next stage an unscaffolded step where they are
+  // asked to type the first morphograph in the word without being told what
+  // the morphograph is? Eg. What is the first morphograph in supported? (they
+  // write sup) What is the next morphograph in supported (they write port)
+  // What is the last morphograph in supported (they write ed) Spell
+  // supported." and, to Marva's design, "yes, hope not hop. Build it."
+  // For each morphograph of W in order (first, next ..., last; a two-part
+  // word is first then last) a hidden type step <prefix>-pos-<i>: the voice
+  // asks "What is the first morphograph in W?" (the phone's voice until PART
+  // B), the screen says only "What is the first morphograph?" (Tim, of the
+  // first wording, which asked about the word without saying it: "I hate
+  // this. Why can't we say the word?" - the word is said, never shown; he
+  // chose this line; the first wording is quoted in DESIGN.md), and the
+  // answer is the morphograph in its own form (hoping: hope, then ing - never
+  // hop). No split
+  // line is shown first. A miss: <prefix>-pos-fix-<i> "The first morphograph
+  // in W is M." (said, ion as "i, o, n"; the screen "The first morphograph is
+  // M.", never the word), then the same question once more
+  // (<prefix>-pos-<i>-again). A second miss: the morphograph is taught
+  // (<prefix>-pos-teach-<i>) and spelled from the voice once
+  // (<prefix>-pos-spell-<i>), then the next position either way. Only the
+  // first ask of each position counts on the ladder (Stages.isFirstWhich).
+  const posScreen = pos => 'What is the ' + pos + ' morphograph?';
+  function* positional(prefix, W, parts, ctx) {
+    const N = parts.length;
+    for (let i = 1; i <= N; i++) {
+      const pos = i === 1 ? 'first' : i === N ? 'last' : 'next';
+      const m = parts[i - 1];
+      const q = 'What is the ' + pos + ' morphograph in ' + W + '?';
+      const ask = id => typeStep(id, q, m, { word: W, hidden: true, pos, spoken: q, screen: posScreen(pos),
+        hint: 'Type the morphograph.' });
+      const r = yield ask(prefix + '-pos-' + i);
+      if (r && r.right) continue;
+      // The fix is not written in the run log (unlogged): it always follows a
+      // wrong first ask, so "t1-pos-1:wrong" then "t1-pos-1-again" already
+      // says it ran, and the log reads as the answers the child gave.
+      const said = morphLine('The ' + pos + ' morphograph in ' + W + ' is ', m, '.', ctx);
+      yield show(prefix + '-pos-fix-' + i, said.text,
+        { morph: m, spoken: said.spoken, screen: 'The ' + pos + ' morphograph is ' + m + '.', unlogged: true });
+      const r2 = yield ask(prefix + '-pos-' + i + '-again');
+      if (r2 && r2.right) continue;
+      yield teachMorph(prefix + '-pos-teach-' + i, m, ctx);
+      yield morphTest(prefix + '-pos-spell-' + i, 'Spell ', m, '.', ctx);
+    }
   }
 
   // The Yes/No walkthrough (Rules.walkthrough) as steps. 3.0.7, the
@@ -14103,11 +14243,19 @@ const Procedures = (() => {
     const e = primaryOf(analysis);
     const m = e.want;
     const tries = num(cfgOf(ctx).FIXUP_MAX_TRIES, 3);
+    const mode = whichOf(ctx);
+    // 3.0.11, level 3: t1-pos-1..N (each with its fix as needed), then
+    // "Spell W." - no split, no tiles or boxes, no t1-morph (the morphographs
+    // were just recalled one by one).
+    if (atLevel3(mode, parts)) {
+      yield* positional('t1', W, parts, ctx);
+      return yield* finalTest('t1', W);
+    }
     yield splitShow('t1-split', splitLine(W, parts), W, parts, ctx);
     const bank = bankFor(W, parts, e.got, ctx, m);
     // 3.0.2: the typing boxes once the word has graduated; a miss shows the
     // split and asks again with the tiles, exactly as a tiles miss does.
-    let r = yield firstWhich('t1', 'What are the morphographs in ' + W + '?', bank, parts, W, ctx);
+    let r = yield firstWhich('t1', 'What are the morphographs in ' + W + '?', bank, parts, W, ctx, mode);
     if (!r.right) {
       yield splitShow('t1-split-again', splitLine(W, parts), W, parts, ctx);
       yield tiles('t1-which-again', 'What are the morphographs in ' + W + '?', bank, parts, { word: W });
@@ -14150,6 +14298,16 @@ const Procedures = (() => {
     const words = teachingWords(m, W, ctx);
     for (let k = 0; k < words.length; k++) {
       const T = words[k];
+      // 3.0.11, level 3: the child's own word is asked by position
+      // (t2-pos-1..N) in place of its whole iteration (no "Next word: W.", no
+      // slot tiles, no part spells), then "Spell W." - no t2-which, no split.
+      // The teaching words before it run exactly as before.
+      if (T === W) {
+        if (atLevel3(whichOf(ctx), parts)) {
+          yield* positional('t2', W, parts, ctx);
+          return yield* finalTest('t2', W);
+        }
+      }
       const tp = T === W ? parts : (data.words[T] || [T]);
       yield show('t2-word', (k === 0 ? 'First word: ' : 'Next word: ') + T + '.', { word: T, say: true });
       // identify all the morphographs in order ...
@@ -14184,7 +14342,7 @@ const Procedures = (() => {
     }
     const text2 = 'Tell me the morphographs in ' + W + '.';
     const bank2 = bankFor(W, parts, null, ctx, m);
-    const ask = firstWhich('t2', text2, bank2, parts, W, ctx);
+    const ask = firstWhich('t2', text2, bank2, parts, W, ctx);     // the mode read here, as in 3.0.10
     const which = yield ask;
     if (!which.right) {
       yield splitShow('t2-split', splitLine(W, parts), W, parts, ctx);
@@ -14277,8 +14435,17 @@ const Procedures = (() => {
   // spell unsupported?"
   function* join(analysis, ctx) {
     const W = ctx.word, parts = ctx.parts;
+    const mode = whichOf(ctx);
+    // 3.0.11, level 3: t7-pos-1..N, then "Do any rules apply?" exactly as at
+    // every level (the word sum stays on screen: Tim's scaffolded word sum),
+    // then "How do we spell W?" - no tiles or boxes, no split.
+    if (atLevel3(mode, parts)) {
+      yield* positional('t7', W, parts, ctx);
+      yield* rulesCheck('t7', W, parts, ctx, false);
+      return yield* finalTest('t7', W, 'How do we spell ' + W + '?');
+    }
     const bank = bankFor(W, parts, null, ctx, primaryOf(analysis).want);
-    const r = yield firstWhich('t7', 'What are the morphographs in ' + W + '?', bank, parts, W, ctx);
+    const r = yield firstWhich('t7', 'What are the morphographs in ' + W + '?', bank, parts, W, ctx, mode);
     if (!r.right) {
       yield splitShow('t7-split', 'The morphographs in ' + W + ' are ' + plus(parts), W, parts, ctx);
       yield tiles('t7-which-again', 'What are the morphographs in ' + W + '?', bank, parts, { word: W });
@@ -14426,7 +14593,7 @@ const Procedures = (() => {
       },
       next(input) {
         if (!cur || ANSWERED.indexOf(cur.kind) !== -1) return null;
-        if (cur.log && cur.kind !== 'done') cur.log.push(cur.id);
+        if (cur.log && cur.kind !== 'done' && !cur.unlogged) cur.log.push(cur.id);   // 3.0.11: a level-3 fix is unlogged
         advance(input);
         return cur;
       }
@@ -14625,7 +14792,11 @@ const Procedures = (() => {
 //   wb     (3.0.2) the "which morphographs" question: { n: days the tiles
 //          were right first try (each day counted once), d: the last day
 //          counted, on: true = the question is the typing boxes }. A record
-//          without wb is on the tiles; nothing is migrated.
+//          without wb is on the tiles; nothing is migrated. 3.0.11 adds
+//          pn: days the BOXES were right first try (each day counted once),
+//          pd: the last such day counted, pos: true = level 3, the
+//          morphographs asked one by one by position. A record without them
+//          is unchanged (a word already on the boxes starts pn at 0).
 const Stages = (() => {
   const cfgOf = cfg => cfg || (typeof CONFIG !== 'undefined' ? CONFIG : {});
   const withIl = (item, more) => Object.assign({}, item, { il: Object.assign({}, item.il || {}, more) });
@@ -14638,31 +14809,60 @@ const Stages = (() => {
   // (it is the spelling only), so from now on only the first asks inside the
   // Type 1, 2 and 7 corrections count towards the typing boxes, and only
   // they show them.
+  // 3.0.11: the first ask of each position at level 3 (t1-pos-1, t2-pos-3,
+  // t7-pos-2 ...) counts too; never its re-ask (-again), its fix (-pos-fix-),
+  // its teach (-pos-teach-) or its spell (-pos-spell-).
   const FIRST_WHICH = ['t1-which', 't2-which', 't7-which'];
+  const FIRST_POS = /^t[127]-pos-\d+$/;
   function isFirstWhich(id) {
-    return FIRST_WHICH.indexOf(String(id == null ? '' : id).replace(/-boxes$/, '')) !== -1;
+    const s = String(id == null ? '' : id);
+    return FIRST_WHICH.indexOf(s.replace(/-boxes$/, '')) !== -1 || FIRST_POS.test(s);
   }
   const boxesAfter = cfg => { const n = cfgOf(cfg).BOXES_AFTER; return n == null ? 2 : n; };
-  // 'boxes' once the word has graduated, else 'tiles' (no item, or an item
-  // from before 3.0.2 with no wb, is on the tiles).
+  const positionalAfter = cfg => { const n = cfgOf(cfg).POSITIONAL_AFTER; return n == null ? 2 : n; };
+  // 'positional' (3.0.11, level 3) once the word has graduated from the
+  // boxes, 'boxes' once it has graduated from the tiles, else 'tiles' (no
+  // item, or an item from before 3.0.2 with no wb, is on the tiles).
   function whichMode(item, cfg) {
-    return item && item.wb && item.wb.on ? 'boxes' : 'tiles';
+    const wb = item && item.wb;
+    if (wb && wb.on && wb.pos) return 'positional';
+    return wb && wb.on ? 'boxes' : 'tiles';
   }
-  // After the first ask of a which question. kind: 'tiles' | 'boxes'.
+  // After the first ask of a which question. kind: 'tiles' | 'boxes' |
+  // 'positional' (app.js passes 'positional' for a level-3 ask, which is a
+  // type step carrying `pos`).
   //   tiles, right: counts the day (a day is counted once: wb.d); the boxes
   //                 come on when BOXES_AFTER days are counted
   //   tiles, wrong: the count goes back to 0
-  //   boxes, right: unchanged
+  //   boxes, right: (3.0.11) counts the day (once: wb.pd) in wb.pn; level 3
+  //                 comes on (wb.pos) when POSITIONAL_AFTER days are counted
   //   boxes, wrong: back to the tiles, with the count at BOXES_AFTER - 1, so
   //                 one more right-first-try tiles day earns the boxes back.
   //                 The day of the miss is stamped as counted (d), so it is a
-  //                 later day that earns them.
+  //                 later day that earns them. (wb is replaced: pn, pd and pos
+  //                 go with it.)
+  //   positional, right: unchanged
+  //   positional, wrong: (3.0.11) back to the boxes, with pn at
+  //                 POSITIONAL_AFTER - 1 and the day of the miss stamped (pd),
+  //                 so one more right-first-try boxes day, a LATER one, earns
+  //                 level 3 back.
   function afterWhich(item, kind, right, day, cfg) {
     item = item || {};
     const need = boxesAfter(cfg);
-    if (kind === 'boxes') {
+    if (kind === 'positional') {
       if (right) return item;
-      return Object.assign({}, item, { wb: { n: Math.max(0, need - 1), d: day, on: false } });
+      const back = Object.assign({}, item.wb || {},
+        { on: true, pn: Math.max(0, positionalAfter(cfg) - 1), pd: day, pos: false });
+      return Object.assign({}, item, { wb: back });
+    }
+    if (kind === 'boxes') {
+      if (!right) return Object.assign({}, item, { wb: { n: Math.max(0, need - 1), d: day, on: false } });
+      const wb = Object.assign({}, item.wb || {});
+      if (wb.pd === day) return item;        // this day is already counted
+      wb.pn = (wb.pn || 0) + 1;
+      wb.pd = day;
+      wb.pos = wb.pn >= positionalAfter(cfg);
+      return Object.assign({}, item, { wb });
     }
     const wb = Object.assign({ n: 0, d: null, on: false }, item.wb || {});
     if (!right) {
@@ -15004,7 +15204,9 @@ const Pages = (() => {
     }
   }
 
-  const dayOf = ms => new Date(ms).toISOString().slice(0, 10);
+  // The page's day as the family reads it under "Test pages" (3.0.12: the
+  // phone's own calendar day, day.js). Display only: prune() goes by `t`.
+  const dayOf = ms => Day.local(ms);
 
   // Keep a page photo. Resolves { ok, id, shrunk }.
   async function save(stu, blob, now) {
@@ -20686,6 +20888,16 @@ const AUDIO_MANIFEST = {
 //    of the sequence has played - never when the fallback ran, and never when
 //    a newer call took over. app.js teachAloud uses it to say "is spelled"
 //    after Tim's clip of the word.
+//  * 3.0.12: unlock() primes the one element inside the Start tap. An iPhone
+//    (Safari's rule: a media element may start playing from a callback only
+//    after that same element's play() was called inside a tap) would
+//    otherwise refuse a session's first word: a hidden word test now says
+//    "Spell" in the device voice and plays Tim's clip of the word when the
+//    phone voice finishes, from a callback. unlock() plays SILENT_WAV, a
+//    silent sound built into the page (so nothing to hear, nothing to mute),
+//    once per page, on the same element every clip uses, and never notes it
+//    as the "Last voice". Android Chrome counts any tap on the page and needs
+//    none of this; elsewhere it costs nothing.
 const Voice = (() => {
   const CACHE = 'spelling-audio-v1';
   const manifest = (typeof AUDIO_MANIFEST !== 'undefined' && AUDIO_MANIFEST) ||
@@ -20763,6 +20975,31 @@ const Voice = (() => {
     return el;
   }
 
+  // 3.0.12: a silent sound, built into the page: a RIFF/WAVE file, 16-bit PCM,
+  // 8000 samples a second, one channel, 80 samples (10 ms) of silence.
+  const SILENT_WAV = 'data:audio/wav;base64,UklGRsQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+  let isPrimed = false;
+  // Called by app.js inside the Start tap, before any step plays. Once per
+  // page: the element is started on SILENT_WAV, so an iPhone lets it play
+  // Tim's clips later from a callback. Never noted as the "Last voice"
+  // (noteClip), and never paused here (the next step's cancel() may pause
+  // it: the tap's permission was given when play() was called). A play()
+  // the phone refuses as not allowed leaves it unprimed, so the next Start
+  // tap tries again. Returns true when it primed the element just now.
+  function unlock() {
+    if (isPrimed) return false;
+    const a = element();
+    a.muted = false;
+    a.src = SILENT_WAV;
+    const p = a.play();
+    isPrimed = true;
+    if (p && p.catch) {
+      p.catch(e => { if (e && e.name === 'NotAllowedError') isPrimed = false; });
+    }
+    return true;
+  }
+  function primed() { return isPrimed; }
+
   function playOne(src, gapMs) {
     return new Promise((resolve, reject) => {
       const a = element();
@@ -20774,6 +21011,7 @@ const Voice = (() => {
       const fail = () => { cleanup(); reject(new Error('audio failed: ' + src)); };
       a.addEventListener('ended', done);
       a.addEventListener('error', fail);
+      a.muted = false;              // 3.0.12: belt and braces (unlock never mutes)
       a.src = src;
       noteClip(src);                // 3.0.4: the problem report's "Last voice"
       const p = a.play();
@@ -20919,6 +21157,7 @@ const Voice = (() => {
     plan, planLetters, planMorph, say, sayLetters, sayMorph, spellMorph, sayseg, cancel, warmCache,
     hasWord, hasMorph, canSpell, hasSound, hasAllSounds,
     lastVoice, notePhoneVoice,                     // 3.0.4: the problem report
+    unlock, primed, SILENT_WAV,                    // 3.0.12: the Start tap primes the element
     available: words.size > 0,
     wordCount: words.size,
     letterCount: letters.size,
@@ -21000,8 +21239,10 @@ const App = (() => {
     profiles = Profiles.saveDb(localStorage, profiles, db);
   }
 
+  // 3.0.12: the phone's own calendar day (day.js). It was the UTC date, so
+  // on a Melbourne phone the day changed at 10 or 11 in the morning.
   function today() {
-    return new Date().toISOString().slice(0, 10);
+    return Day.today();
   }
 
   function currentWord(item) {
@@ -21131,12 +21372,10 @@ const App = (() => {
   function gradeItem(id, grade) {
     const it = db.items[id];
     const next = Sched.grade(it, grade);
-    const dueDate = new Date();
-    dueDate.setDate(dueDate.getDate() + next.interval);
     db.items[id] = Object.assign({}, it, {
       ph: next.ph, step: next.step, s: next.s, d: next.d,
       reps: next.reps, lapses: next.lapses,
-      due: dueDate.toISOString().slice(0, 10),
+      due: Day.add(today(), next.interval),   // 3.0.12: calendar days from today (day.js)
       poolIdx: ((it.poolIdx || 0) + 1) % it.pool.length
     });
     save();
@@ -21178,8 +21417,12 @@ const App = (() => {
   // has been said (onend / onerror), at once when the phone has no speech,
   // and at the latest after 250 ms + 60 ms per character, so a phone whose
   // speech is off still gets the letters that follow; the timer is cleared
-  // when the phone says it has finished.
-  function speakScript(text, then) {
+  // when the phone says it has finished. 3.0.12: `minMs` (optional) is the
+  // least that latest can be: a hidden word test's "Spell" waits up to
+  // LEAD_WAIT_MS, because the word that follows stops the phone voice
+  // (speak), and a short lead's own 250 + 60 ms per character can run out
+  // while a phone is still starting to say it.
+  function speakScript(text, then, minMs) {
     const my = newTurn();
     let done = false, timer = null;
     const finish = () => {
@@ -21193,7 +21436,7 @@ const App = (() => {
       speechSynthesis.cancel();
       utter(String(text), 0.85, then ? finish : null);
     } catch (e) { finish(); return; }        // no speech here: straight on
-    if (then && !done) timer = setTimeout(finish, 250 + 60 * String(text).length);
+    if (then && !done) timer = setTimeout(finish, Math.max(minMs || 0, 250 + 60 * String(text).length));
   }
 
   // The letters of a morphograph or word in Tim's letter clips, falling back
@@ -21440,9 +21683,12 @@ const App = (() => {
     // 3.0.5 (WRITE_FIRST false): no paper during practice, only for the
     // spelling test at the end (Tim: "SKip that. THe paper is just teh very
     // final step").
+    // 3.0.12: "Listen to each word and type it." - the spelling tests now
+    // show nothing on screen, and the voice asks them. (Its old wording ended
+    // in the same two words as 3.0.5's neutral screen lines, which are gone.)
     $('home-hint').textContent = CONFIG.WRITE_FIRST === false
-      ? 'Type each word you hear. Paper and a pen are only needed for the short spelling test at the end.'
-      : 'You’ll need paper and a pen. Write each word you hear, then type it. ' +
+      ? 'Listen to each word and type it. Paper and a pen are only needed for the short spelling test at the end.'
+      : 'You’ll need paper and a pen. Listen to each word, write it, then type it. ' +
         'The app checks it, and fixes any mistake with you. At the end there is ' +
         'a short spelling test on paper.';
     renderBanner();
@@ -21503,7 +21749,14 @@ const App = (() => {
     $('req-banner').classList.toggle('hidden', !pending);
   }
 
+  // 3.0.12: Voice.unlock() first, inside the Start tap, before any step is
+  // on screen (and again in startNormal, which the test hook reaches
+  // directly; it runs once per page). An iPhone lets the app's one audio
+  // player play from a callback only after that player was started inside a
+  // tap, and a session's first word now plays when the phone voice finishes
+  // "Spell" (a callback), so the player is started here on a silent clip.
   function startSession() {
+    try { Voice.unlock(); } catch (e) { /* no audio here: the phone voice still speaks */ }
     session = buildSession();
     if (!session) return;
     // New segmentable words run the segmentation ladder first; the rest go
@@ -21517,6 +21770,7 @@ const App = (() => {
   }
 
   function startNormal() {
+    try { Voice.unlock(); } catch (e) { /* no audio here: the phone voice still speaks */ }
     if (!session) return;
     session.lesson = Lesson.start(session.items);
     nextItem();
@@ -21543,7 +21797,8 @@ const App = (() => {
   // never shows a retired word or an old spelling (comer, flyer...) as an
   // example word; the analyser (known) and the tiles still read every word.
   // 3.0.2: which = Stages.whichMode(db.items[flow.id], CONFIG), the tiles or
-  // the typing boxes for the current item's "which morphographs" question.
+  // the typing boxes for the current item's "which morphographs" question
+  // (3.0.11: or 'positional', level 3, each morphograph asked by position).
   // ctx() is called once `flow` is the new step runner's (its id is taken
   // then), and the mode is read each time that question comes up, so a boxes
   // miss earlier in the same correction already brings the tiles back.
@@ -21622,11 +21877,19 @@ const App = (() => {
     f.className = 'feedback hidden';
   }
 
-  // 3.0.5: what a hidden step shows. The answer is never on screen, and the
-  // one replay control is #btn-step-hear "Hear it again" (Tim: "Why are their
+  // 3.0.5: the answer of a hidden step is never on screen, and the one
+  // replay control is #btn-step-hear "Hear it again" (Tim: "Why are their
   // 2 hear it again buttons?" - the 🔊 that sat inside the line is gone).
-  const HIDDEN_WORD_LINE = 'Spell the word you hear.';
-  const HIDDEN_MORPH_LINE = 'Spell the morphograph you hear.';
+  // 3.0.12: a hidden test shows no line at all. Tim, verbatim: "2. I wanted
+  // it to be - Spell X (but all in TTS - nothing needs to be on the
+  // screen.)" The two neutral screen lines 3.0.5 put there (one for a word,
+  // one for a morphograph) are gone; the voice asks the test (stepAudio).
+  // A hidden WORD test: one that says its word (s.word) and has neither a
+  // morphograph of its own nor a level-3 position or screen line - x-spell,
+  // o-spell and every hiddenTest (t*-final, Type 7's "How do we spell W?",
+  // t2-word-spell, t4-spell, t8-part). Its spoken line is Tim's line.
+  const isHiddenWord = s => !!(s && s.hidden && s.word && !s.morph && !s.pos && !s.screen);
+  const hiddenWordLine = s => String(s.spoken || s.text || '');
 
   // A split line's size: as big as fits on one line, 16 to 30 px, from the
   // line's length and the width of #step-prompt (the window's width before
@@ -21646,15 +21909,23 @@ const App = (() => {
   //     (class split-line), the word underneath in #step-word (Tim: "The text
   //     on teh screen should just be pre + dict + ion (all on the same
   //     line...)")
-  //   a hidden word: "Spell the word you hear."
-  //   a hidden morphograph: "Spell the morphograph you hear." (Tim: "we want
-  //     them spelling the morphograph from memory")
+  //   (3.0.11) a step with its own screen line (`screen`): that line - the
+  //     level-3 ask "What is the first morphograph?" and its fix "The first
+  //     morphograph is hope.", so the word is never on screen while the voice
+  //     (the phone's, until PART B) says Tim's whole line
+  //   (3.0.12) a hidden test, word or morphograph: nothing - the voice asks
+  //     it (Tim: "Spell X (but all in TTS - nothing needs to be on the
+  //     screen.)"; of the morphograph tests, "we want them spelling the
+  //     morphograph from memory"). The answer box, the keys, the hint and
+  //     Hear it again are as they were.
   //   anything else: Tim's line
+  // data-spoken is the step's whole spoken line; a hidden word test's is its
+  // line ("Spell prediction.", "How do we spell unsupported?").
   function setPrompt(s) {
     const el = $('step-prompt');
     el.textContent = '';
     el.setAttribute('data-script', s.text);
-    el.setAttribute('data-spoken', s.spoken || '');
+    el.setAttribute('data-spoken', isHiddenWord(s) ? hiddenWordLine(s) : (s.spoken || ''));
     const split = s.kind === 'show' && Array.isArray(s.parts) && s.parts.length > 0;
     el.classList.toggle('split-line', split);
     el.style.fontSize = '';
@@ -21664,14 +21935,39 @@ const App = (() => {
       el.style.fontSize = splitFontPx(el, line) + 'px';
       return;
     }
-    if (s.hidden && s.morph) { el.textContent = HIDDEN_MORPH_LINE; return; }
-    if (s.hidden && s.word) { el.textContent = HIDDEN_WORD_LINE; return; }
+    if (s.screen) { el.textContent = s.screen; return; }
+    if (s.hidden && (s.morph || s.word)) return;      // 3.0.12: nothing on screen
     el.textContent = s.text;
+  }
+
+  // 3.0.12: a hidden word test said aloud - the words before the word in the
+  // device voice ("Spell", "How do we spell", "Now spell": the line up to the
+  // word, trimmed), then Tim's clip of the word (speak). The same shape as
+  // teachAloud, which has said the phone's words then Tim's clips since 3.0.5.
+  // A word with no clip (Voice.hasWord false): the whole line in ONE
+  // device-voice utterance ("Spell hopeful."), never half and half. A clip
+  // that exists but cannot play (offline and not yet saved) is said by the
+  // device voice (Voice.say's fallback), so the child always hears the whole
+  // instruction. Hear it again runs this again: the same sequence.
+  // When the phone never says it has finished the lead (its speech is off),
+  // the word follows after LEAD_WAIT_MS at the latest.
+  const LEAD_WAIT_MS = 2000;
+  function hiddenWordAloud(s) {
+    const line = hiddenWordLine(s);
+    const W = String(s.word);
+    const at = line.toLowerCase().lastIndexOf(W.toLowerCase());
+    const lead = at > 0 ? line.slice(0, at).trim() : '';
+    if (!Voice.hasWord(W) || at === -1) { speakScript(line); return; }
+    if (!lead) { speak(W); return; }
+    speakScript(lead, () => speak(W), LEAD_WAIT_MS);
   }
 
   // What the step's arrival (and its one replay button) plays.
   //   a teach sentence ("<name> is spelled ...")  teachAloud
   //   o-listen ("Listen: W.")                    the word said, spelled, said
+  //   (3.0.12) a hidden word test                "Spell" in the device voice,
+  //                                              then Tim's clip of the word
+  //                                              (hiddenWordAloud)
   //   a step with a spoken line                  the device voice says it
   //   a step that says its word                  Tim's clip of the word (the
   //                                              phone's voice when there is none)
@@ -21679,6 +21975,7 @@ const App = (() => {
     if (!s) return null;
     if (s.kind === 'teach' && (s.morph || s.spoken)) return () => teachAloud(s);
     if (s.kind === 'teach' && s.word) return () => speakSpelled(s.word);
+    if (isHiddenWord(s)) return () => hiddenWordAloud(s);   // before the spoken-line branch
     if (s.spoken) return () => speakScript(s.spoken);
     if (s.word && (s.hidden || s.say || s.kind === 'show' || s.kind === 'dictate' || s.kind === 'boxes' ||
         (s.kind === 'tiles' && !s.single))) {
@@ -22028,9 +22325,11 @@ const App = (() => {
     if (!res) return;
     // 3.0.2: the first ask of a "which morphographs" question (tiles or
     // boxes, never a retry) moves the word towards the typing boxes, or back
-    // to the tiles (Stages.afterWhich).
+    // to the tiles (Stages.afterWhich). 3.0.11: a level-3 ask (a type step
+    // carrying `pos`, the first ask of its position) counts as 'positional':
+    // right keeps level 3, wrong puts the word back on the boxes.
     if (Stages.isFirstWhich(s.id) && flow.id != null && db.items[flow.id]) {
-      db.items[flow.id] = Stages.afterWhich(db.items[flow.id], s.kind, res.right, today(), CONFIG);
+      db.items[flow.id] = Stages.afterWhich(db.items[flow.id], s.pos ? 'positional' : s.kind, res.right, today(), CONFIG);
       save();
     }
     if (flow.mode === 'exposure') { afterExposureAnswer(s, res); return; }

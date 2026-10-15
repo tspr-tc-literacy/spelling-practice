@@ -10606,7 +10606,7 @@ const CONFIG = {
   APP_NAME: 'Spelling Practice',
   // tools/publish_release.py refuses a release unless this, the built page and
   // sw.js's cache name ('spelling-app-v' + VERSION) all agree.
-  VERSION: '3.0.15',
+  VERSION: '3.0.16',
   // v3: the child types every answer and the app marks it (trim + lowercase).
   // false (3.0.5, 2026-10-13): the hint under each word is "Type it." and the
   // home screen says paper and a pen are only needed for the spelling test at
@@ -10623,7 +10623,7 @@ const CONFIG = {
   // it names one - a split part or the morphograph asked for ("i, o, n"); every
   // other morphograph is said as a chunk. Tim: "spell out the i o n". His teach
   // sentence for one of these is "This morphograph is spelled i, o, n."
-  SPELL_OUT_MORPHS: ['ion', 'es', 'ves', 'ch', 'sh', 'ic', 'y', 'ed'],   // 3.0.14 (2026-10-14), Tim: "there are a lot of morphographs in teh phrases that need to be spelled out: e-s, v-e-s, c-h, s-h, i-c, y"; ed added because the STM teacher book writes it e-d (DESIGN.md, "Every correction line from the STM teacher book")
+  SPELL_OUT_MORPHS: ['ion', 'es', 'ves', 'ch', 'sh', 'ic', 'y', 'ed', 'ial', 'ian', 'ise', 'ous', 'ual', 'ure'],   // 3.0.14 (2026-10-14), Tim: "there are a lot of morphographs in teh phrases that need to be spelled out: e-s, v-e-s, c-h, s-h, i-c, y"; ed added because the STM teacher book writes it e-d (DESIGN.md, "Every correction line from the STM teacher book"); 3.0.16 (2026-10-14, run 20261014-answers): ial, ian, ise, ous, ual, ure added - on the Prompt Pieces morph retakes page Tim answered each of them (and ic) "none of these, say the letters", so the app says their letters wherever it names them, and PART B uses letter clips for them, no morph-name clip
   // v3 correction procedures (procedures.js):
   // extra morphograph tiles in a "which morphographs" question, besides the
   // word's own and the one the child used (3.0.2: real morphographs that look
@@ -18350,7 +18350,7 @@ const AUDIO_MANIFEST = {
 "baby": "7118e3ef",
 "babying": "8ebfe4ae",
 "babyish": "cdb8f683",
-"back": "3b6872c8",
+"back": "926a9999",
 "backer": "3ef52361",
 "backing": "447be7d2",
 "backless": "ea77ada0",
@@ -19500,7 +19500,7 @@ const AUDIO_MANIFEST = {
 "less": "83895db4",
 "let": "deb5a75c",
 "letter": "c385835f",
-"life": "d1f2ede1",
+"life": "87e149bc",
 "lifeless": "fd683efe",
 "light": "8db9c818",
 "lighten": "f19c48d6",
@@ -19511,7 +19511,7 @@ const AUDIO_MANIFEST = {
 "lightness": "d9e2b154",
 "lights": "14378ef3",
 "likable": "3c622754",
-"like": "1bbcdca6",
+"like": "c16d14d1",
 "liked": "bee12065",
 "likelihood": "aeba0cc7",
 "likely": "e38b2e03",
@@ -19614,7 +19614,7 @@ const AUDIO_MANIFEST = {
 "mending": "7a924726",
 "merge": "1b0d756b",
 "merrier": "a90b3fec",
-"merry": "ce4b01ca",
+"merry": "361e2f56",
 "met": "e704f33a",
 "middle": "742d2c15",
 "middling": "cbb728b2",
@@ -20310,7 +20310,7 @@ const AUDIO_MANIFEST = {
 "settling": "90b4101a",
 "seven": "5f32cbb9",
 "seventeen": "dc7ee088",
-"sew": "45ed5d10",
+"sew": "2b4e82b9",
 "sewed": "13f16f36",
 "sewn": "e82b0106",
 "shake": "93cc4101",
@@ -20436,9 +20436,9 @@ const AUDIO_MANIFEST = {
 "soundless": "5b3b00d3",
 "soundly": "04f9101e",
 "soundness": "effab2f6",
-"south": "09d704b8",
+"south": "2770620c",
 "southern": "b78dbc3c",
-"sow": "df989c19",
+"sow": "8abbf02d",
 "sowing": "07717997",
 "sown": "63038ee8",
 "soy": "cc73af76",
@@ -20852,7 +20852,7 @@ const AUDIO_MANIFEST = {
 "varies": "fff97b9a",
 "various": "d8e41c0a",
 "variously": "7cbd7261",
-"vary": "94824efe",
+"vary": "72bbfb6f",
 "varying": "e72afaf2",
 "vent": "d2169327",
 "venting": "34fa1db9",

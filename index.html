@@ -10606,7 +10606,7 @@ const CONFIG = {
   APP_NAME: 'Spelling Practice',
   // tools/publish_release.py refuses a release unless this, the built page and
   // sw.js's cache name ('spelling-app-v' + VERSION) all agree.
-  VERSION: '3.0.17',
+  VERSION: '3.0.19',
   // v3: the child types every answer and the app marks it (trim + lowercase).
   // false (3.0.5, 2026-10-13): the hint under each word is "Type it." and the
   // home screen says paper and a pen are only needed for the spelling test at
@@ -13193,7 +13193,8 @@ const Analyser = (() => {
 // a prefix or where no suffix follows (Tim: "E ends in e. Wtf? It should be -
 // (word) ends in e."). A morphograph AFTER the join that is one letter or
 // spelled out is never the subject of a sentence: its fact reads "The next
-// morphograph is es. It does not begin with i." (said "... is e, s. It ..."),
+// morphograph is es. It does not begin with an i." (3.0.19's words; said
+// "... is e, s. It ..."),
 // so the voice never runs its letters into "begins" or "does".
 //
 // The voice: every line is a function of n, which names a letter group (a
@@ -13208,6 +13209,15 @@ const Rules = (() => {
   const VOWELS = 'aeiou';
   const isVowel = c => !!c && VOWELS.indexOf(c) !== -1;
   const norm = s => String(s == null ? '' : s).trim().toLowerCase();
+  // 3.0.19 (2026-10-16), Tim: "I am happy for it to stay as v and c for
+  // rules, but when we are asking them questions or explaining why the rule
+  // does or doesn't apply, then we use vowel or consonant." So the rule
+  // STATEMENTS (and their cards) keep STM's notation - "the final c", cvc, v -
+  // on screen and in the voice; every QUESTION and EXPLANATION (the facts,
+  // the fixes, the Type 8 reasons, Type 9's why) says the words. CVC_WORDS is
+  // cvc in words: written here once, used by every question and explanation
+  // (procedures.js reads it as Rules.CVC_WORDS).
+  const CVC_WORDS = 'consonant-vowel-consonant';
 
   // The rule cards: name (the worksheet generator's, worksheet-generator/
   // src/data.js RULES, read 2026-10-08; unchanged) and the Unjumble-the-Rule
@@ -13256,7 +13266,7 @@ const Rules = (() => {
 
   // ---------------------------------------------------------------- short cvc
   // Port of the worksheet generator's isCvcMorph (generator.js, Tim
-  // 2026-06-24): short = 3-4 letters; ends consonant-vowel-consonant; y and w
+  // 2026-06-24): short = 3-4 letters; ends consonant, vowel, consonant; y and w
   // are vowels at the end; x counts as two consonants.
   function isCvcMorph(m) {
     const s = norm(m);
@@ -13282,7 +13292,7 @@ const Rules = (() => {
     const mid = s[s.length - 2], pre = s[s.length - 3];
     if (!isVowel(mid)) return 'it ends in two consonants';
     if (isVowel(pre)) return 'it has two vowels before the last letter';
-    return 'it is not a short cvc morphograph';
+    return 'it is not a short ' + CVC_WORDS + ' morphograph';      // 3.0.19: an explanation, in words
   }
 
   // ---------------------------------------------------------------- the voice
@@ -13299,7 +13309,13 @@ const Rules = (() => {
   const loneOrSpelled = (m, ctx) => m.length === 1 || spellList(ctx).indexOf(norm(m)) !== -1;
   // In a spoken line, single letters joined by hyphens are said one by one
   // (o-r -> "o, r"); consonant-and-y, whose parts are words, is left alone.
-  const unhyphen = t => String(t).replace(/\b[A-Za-z](?:-[A-Za-z])+\b/g, m => m.split('-').join(', '));
+  // 3.0.19 (2026-10-16): then the token cvc, which only the doubling rule
+  // statements still carry (STM's notation, kept for rules), is said
+  // "c, v, c": "... when the word ends c, v, c and the next morphograph begins
+  // with v." No spoken line says cvc as a word (Tim's own cvc recording, in
+  // audio/pending/c-options, is for a later build to play there).
+  const unhyphen = t => String(t).replace(/\b[A-Za-z](?:-[A-Za-z])+\b/g, m => m.split('-').join(', '))
+    .replace(/\bcvc\b/g, 'c, v, c');
   const asIs = m => m;
   const cap = s => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
   const seq = lines => n => lines.filter(Boolean).map(l => l(n)).join(' ');
@@ -13484,20 +13500,29 @@ const Rules = (() => {
   // ---------------------------------------------------------------- the facts, one sentence each
   // X: the morphograph before the join as the lines name it (f.name).
   const endsInE = (f, n) => cap(n(f.name)) + (f.endsE ? ' ends in e.' : ' does not end in e.');
-  const cvcFact = (f, n) => cap(n(f.name)) + (f.shortCvc ? ' is a short cvc morphograph.'
-    : ' is not a short cvc morphograph: ' + cvcWhyNot(f.name) + '.');
+  // 3.0.19: the facts are explanations, so they say the words (CVC_WORDS,
+  // "a vowel", "an i", Tim's y rule); the statements above keep STM's notation.
+  const cvcFact = (f, n) => cap(n(f.name)) + (f.shortCvc ? ' is a short ' + CVC_WORDS + ' morphograph.'
+    : ' is not a short ' + CVC_WORDS + ' morphograph: ' + cvcWhyNot(f.name) + '.');
   const yFact = (f, n) => cap(n(f.name)) + (f.consonantY ? ' ends with a consonant-and-y.' : ' does not end with a consonant-and-y.');
   // The next morphograph N: "Er begins with e, a vowel letter."; one letter or
   // spelled out, "The next morphograph is ed. It begins with e, a vowel letter."
   const aboutN = (f, n, ctx, rest) => (loneOrSpelled(f.right, ctx)
     ? 'The next morphograph is ' + n(f.right) + '. It ' + rest
     : cap(n(f.right)) + ' ' + rest);
-  const SUFFIX_Y = 'The suffix y counts as a vowel letter.';
+  // 3.0.19 (2026-10-16), Tim's y rule: "y counts as a vowel at the end of a
+  // morphograph and when it is the only letter in the morphograph it counts
+  // as being at the end of the morphograph." - as two sentences, on screen
+  // and said (it replaces "The suffix y counts as a vowel letter.").
+  const SUFFIX_Y = 'Y counts as a vowel at the end of a morphograph. When it is the only letter in the morphograph it counts as being at the end of the morphograph.';
   const vcFact = (f, n, ctx) => (f.right === 'y' ? SUFFIX_Y
     : aboutN(f, n, ctx, 'begins with ' + f.right[0] + (f.nextVowel ? ', a vowel letter.' : ', a consonant letter.')));
+  // 3.0.19, Tim: "begins with a vowel.", "does not begin with a vowel",
+  // "Does it begin with an i?", "does not begin with an i" (they were
+  // "begins with v." / "does not begin with v." / "begins with i.").
   const vFact = (f, n, ctx) => (f.right === 'y' ? SUFFIX_Y
-    : aboutN(f, n, ctx, f.nextVowel ? 'begins with v.' : 'does not begin with v.'));
-  const iFact = (f, n, ctx) => aboutN(f, n, ctx, f.nextI ? 'begins with i.' : 'does not begin with i.');
+    : aboutN(f, n, ctx, f.nextVowel ? 'begins with a vowel.' : 'does not begin with a vowel.'));
+  const iFact = (f, n, ctx) => aboutN(f, n, ctx, f.nextI ? 'begins with an i.' : 'does not begin with an i.');
   const lastLetter = s => s[s.length - 1];
 
   // 3.0.15 (Tim: "remove this bit. We don't want to overload them
@@ -13611,11 +13636,16 @@ const Rules = (() => {
       return out;
     }
     if (rule === 'doubling') {
-      ask('yesno', n => 'Is ' + n(X) + ' a short cvc morphograph?', yn(f.shortCvc), 'fact', n => cvcFact(f, n));
+      // 3.0.19: the questions say the words (Tim: "when we are asking them
+      // questions ... then we use vowel or consonant").
+      ask('yesno', n => 'Is ' + n(X) + ' a short ' + CVC_WORDS + ' morphograph?', yn(f.shortCvc), 'fact', n => cvcFact(f, n));
       if (!f.shortCvc) { ask('yesno', () => 'So does the doubling rule apply?', 'no', 'rule', told); return out; }
       // Book 1 L24-25: "The next morphograph is ness. Does it begin with v?"
       // ... "So do we double a letter?" ... "What letter do we double?"
-      ask('yesno', n => 'The next morphograph is ' + n(N) + '. Does it begin with v?', yn(f.nextVowel), 'fact', n => vFact(f, n, ctx));
+      // 3.0.19: the book's two sentences kept (the first names the
+      // morphograph, which a spelled-out one cannot do as a subject); the
+      // asking half is Tim's: "Does the next morphograph being with a vowel?"
+      ask('yesno', n => 'The next morphograph is ' + n(N) + '. Does it begin with a vowel?', yn(f.nextVowel), 'fact', n => vFact(f, n, ctx));
       ask('yesno', () => 'So do we double a letter?', yn(f.doubles), 'rule', told);
       if (f.doubles) {
         const L = lastLetter(M);
@@ -13627,8 +13657,9 @@ const Rules = (() => {
     if (rule === 'y-to-i') {
       ask('yesno', n => 'Does ' + n(X) + ' end with a consonant-and-y?', yn(f.consonantY), 'fact', n => yFact(f, n));
       if (!f.consonantY) { ask('yesno', () => 'So does the y to i rule apply?', 'no', 'rule', told); return out; }
-      ask('yesno', n => 'The next morphograph is ' + n(N) + '. Does it begin with i?', yn(f.nextI), 'fact', n => iFact(f, n, ctx));
-      ask('yesno', () => 'Do we change the y?', yn(f.changesY), 'rule', told);
+      // 3.0.19, Tim: "Does it begin with an i?" and "do we change the y to i?"
+      ask('yesno', n => 'The next morphograph is ' + n(N) + '. Does it begin with an i?', yn(f.nextI), 'fact', n => iFact(f, n, ctx));
+      ask('yesno', () => 'Do we change the y to i?', yn(f.changesY), 'rule', told);
       // the consonant-and-y plural (cities): Book 1 L57
       if (J.rules.indexOf('plural-cy') !== -1) {
         const cy = correctionOf('plural-cy', f, J, W, ctx);
@@ -13786,8 +13817,10 @@ const Rules = (() => {
     const one = N.length === 1;
     const vowelLetter = N === 'y' ? 'y counts as a vowel' : one ? 'the next morphograph begins with a vowel letter' : N + ' begins with a vowel letter';
     const consLetter = N === 'y' ? 'y counts as a consonant' : one ? 'the next morphograph begins with a consonant letter' : N + ' begins with a consonant letter';
-    const beginsI = one ? 'the next morphograph begins with i' : N + ' begins with i';
-    const notI = one ? 'the next morphograph does not begin with i' : N + ' does not begin with i';
+    // 3.0.19: the reasons are explanations, in Tim's words ("an i"; the cvc
+    // reasons as CVC_WORDS)
+    const beginsI = one ? 'the next morphograph begins with an i' : N + ' begins with an i';
+    const notI = one ? 'the next morphograph does not begin with an i' : N + ' does not begin with an i';
     let right, wrongs;
     if (rule === 'final-e') {
       if (f.dropsE) return null;
@@ -13795,8 +13828,8 @@ const Rules = (() => {
       else { right = consLetter; wrongs = [X + ' does not end with an e', vowelLetter]; }
     } else if (rule === 'doubling' || rule === 'doubling-ext') {
       if (f.doubles) return null;
-      if (!f.shortCvc) { right = X + ' is not a short cvc morphograph'; wrongs = [X + ' is a short cvc morphograph', f.nextVowel ? consLetter : vowelLetter]; }
-      else { right = consLetter; wrongs = [X + ' is not a short cvc morphograph', vowelLetter]; }
+      if (!f.shortCvc) { right = X + ' is not a short ' + CVC_WORDS + ' morphograph'; wrongs = [X + ' is a short ' + CVC_WORDS + ' morphograph', f.nextVowel ? consLetter : vowelLetter]; }
+      else { right = consLetter; wrongs = [X + ' is not a short ' + CVC_WORDS + ' morphograph', vowelLetter]; }
     } else if (rule === 'y-to-i') {
       if (f.changesY) return null;
       if (!f.consonantY) { right = X + ' does not end with a consonant and y'; wrongs = [X + ' ends with a consonant and y', f.nextI ? notI : beginsI]; }
@@ -13831,7 +13864,8 @@ const Rules = (() => {
   return { CARDS, BASIC, isCvcMorph, cvcWhyNot, joins, facts, wordRules, judgeChoice, walkthrough,
     whyNot, card, words, optionFor, covers,
     STATEMENTS, ruleFix,                               // 3.0.7: the correction layer
-    statement, unhyphen };                             // 3.0.14: the book's lines, said
+    statement, unhyphen,                               // 3.0.14: the book's lines, said
+    CVC_WORDS };                                       // 3.0.19: cvc in words, for questions and explanations
 })();
 </script>
 <script>
@@ -14179,7 +14213,11 @@ const Procedures = (() => {
   // w-i-d-e-r) is said letter by letter, "o, r" (consonant-and-y, whose parts
   // are words, is left alone). Every spoken line below passes through voiced.
   const unplus = t => String(t).replace(/\s*\+\s*/g, ', ');
-  const unhyphen = t => String(t).replace(/\b[A-Za-z](?:-[A-Za-z])+\b/g, m => m.split('-').join(', '));
+  // 3.0.19 (2026-10-16): then the token cvc - only in the doubling rule
+  // statements and cards, which keep STM's notation - is said "c, v, c", as
+  // rules.js says it; no spoken line says cvc as a word.
+  const unhyphen = t => String(t).replace(/\b[A-Za-z](?:-[A-Za-z])+\b/g, m => m.split('-').join(', '))
+    .replace(/\bcvc\b/g, 'c, v, c');
   const voiced = t => unhyphen(unplus(t));
   // The split line's sentence: "The morphographs in prediction are pre, dict, i, o, n."
   const splitSpoken = (W, parts, ctx) =>
@@ -14745,10 +14783,14 @@ const Procedures = (() => {
     yield* walk('t9', W, parts, ctx, { join: k, all: true });
     const R = rulesOf(ctx);
     const cvc = R ? R.isCvcMorph(M) : false;
+    // 3.0.19 (2026-10-16): an explanation, so cvc in words (Rules.CVC_WORDS;
+    // Tim: "when we are ... explaining why the rule does or doesn't apply,
+    // then we use vowel or consonant")
+    const cvcWords = (R && R.CVC_WORDS) || 'consonant-vowel-consonant';
     // 3.0.8: said too, each morphograph as saidAs says it (ion as "i, o, n")
     const why9 = n => 'The morphograph is not ' + M.slice(0, -1) + ', it is ' + n(M) +
       ' (even though we have dropped the e when adding ' + n(N) + '). So we don\'t apply the doubling rule because ' +
-      n(M) + (cvc ? ' ends in e.' : ' is not a short cvc morphograph.');
+      n(M) + (cvc ? ' ends in e.' : ' is not a short ' + cvcWords + ' morphograph.');
     yield show('t9-why', why9(m => m), { spoken: voiced(why9(m => saidAs(m, ctx))) });
     return yield* finalTest('t9', W);
   }
@@ -15493,6 +15535,7 @@ const AUDIO_MANIFEST = {
 "admitted",
 "adventure",
 "adventurers",
+"adventures",
 "adverb",
 "adversity",
 "advise",
@@ -16071,6 +16114,7 @@ const AUDIO_MANIFEST = {
 "dined",
 "diner",
 "dining",
+"direct",
 "direction",
 "director",
 "disagree",
@@ -16846,6 +16890,7 @@ const AUDIO_MANIFEST = {
 "misstated",
 "mistake",
 "mistaken",
+"mistakes",
 "misuse",
 "misused",
 "misusing",
@@ -18289,6 +18334,7 @@ const AUDIO_MANIFEST = {
 "admitted": "6b2c86ce",
 "adventure": "59845967",
 "adventurers": "40a22019",
+"adventures": "1f79c65b",
 "adverb": "58bd7ce1",
 "adversity": "58aa4aae",
 "advise": "d4e4f734",
@@ -18867,6 +18913,7 @@ const AUDIO_MANIFEST = {
 "dined": "a574b54a",
 "diner": "7c9b149b",
 "dining": "1e177160",
+"direct": "a59918a5",
 "direction": "163756b7",
 "director": "e0af4ee3",
 "disagree": "8a7c8dc6",
@@ -19642,6 +19689,7 @@ const AUDIO_MANIFEST = {
 "misstated": "6a6f6be2",
 "mistake": "eb4cc299",
 "mistaken": "6394f1a6",
+"mistakes": "1ae07a8b",
 "misuse": "d2dd2a06",
 "misused": "21055971",
 "misusing": "26d1a670",

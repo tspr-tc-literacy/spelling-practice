@@ -162,7 +162,8 @@ button.link { width: auto; margin: 0; background: none; border: none;
 .profile-name-actions { display: flex; gap: 8px; }
 .profile-name-actions button { flex: 1; margin: 0; }
 
-/* v3 slice 2: rule questions, the paper test, test pages */
+/* v3 slice 2: rule questions, the paper test (3.0.21, 2026-10-20: its page
+   photo and the kept-pages screen went, and their rules with them) */
 .tile.tile-long { font-size: 17px; font-weight: 500; text-align: left; min-width: 0; width: 100%; }
 .check-opts { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin: 8px 0; }
 .check-opt { font-size: 18px; padding: 12px 16px; background: #fff; border: 2px solid #a8c3d8; color: #1d4f78; }
@@ -172,17 +173,6 @@ button.link { width: auto; margin: 0; background: none; border: none;
 .yesno button { flex: 1; font-size: 20px; font-weight: 600; padding: 16px 0; }
 .choices { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
 .choice-opt { text-align: left; font-size: 17px; background: #eef3f7; border: 1px solid #a8c3d8; color: #1d4f78; }
-.photo-step { margin: 8px 0; }
-.file-label { display: block; text-align: center; cursor: pointer; border-radius: 10px; }
-.file-label { position: relative; overflow: hidden; }
-.file-label input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
-.page-photo { display: block; max-width: 100%; max-height: 220px; margin: 0 auto 10px;
-  border: 1px solid #ccc; border-radius: 8px; object-fit: contain; background: #fff; cursor: zoom-in; }
-.page-photo.big { max-height: none; width: 100%; cursor: zoom-out; }
-.pages-list { margin: 8px 0 14px; }
-.page-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid #e3e3e3; }
-.page-row span { flex: 1; }
-.page-row .ghost { width: auto; margin: 0; padding: 8px 12px; }
 
 /* v3 slice 3a: scanning a practice code */
 /* The photo picker for a code: off screen but not display:none, so the
@@ -254,7 +244,6 @@ button.link { width: auto; margin: 0; background: none; border: none;
   <nav id="menu" class="hidden">
     <button id="menu-report">Send report to teacher</button>
     <button id="menu-backup">Save report file</button>
-    <button id="menu-pages">Test pages</button>
     <button id="menu-scan">Scan new words</button>
     <button id="menu-scan-pick" class="menu-sub">Use a screenshot or photo instead</button>
     <button id="menu-code">Enter a code</button>
@@ -347,9 +336,6 @@ button.link { width: auto; margin: 0; background: none; border: none;
      each step of a correction procedure (procedures.js) and the paper test. -->
 <section id="scr-step" class="screen">
   <p id="step-count" class="count"></p>
-  <!-- slice 2: the photo of the paper-test page, shown while the child types
-       from it. Tap to enlarge. It stays on this phone (pages.js). -->
-  <img id="page-photo" class="page-photo hidden" alt="Your spelling-test page">
   <p id="step-prompt" class="step-prompt"></p>
   <p id="step-hint" class="hint hidden"></p>
   <div id="step-word" class="seg-answer hidden"></div>
@@ -382,15 +368,6 @@ button.link { width: auto; margin: 0; background: none; border: none;
   </div>
   <!-- slice 2: tap one answer (Type 8: why a rule does not apply) -->
   <div id="step-choice" class="choices hidden"></div>
-  <!-- slice 2: the paper test's photo of the page -->
-  <div id="step-photo" class="photo-step hidden">
-    <label class="primary big file-label">&#128247; Take photo
-      <input id="page-file" type="file" accept="image/*" capture="environment">
-    </label>
-    <button id="btn-photo-skip" class="ghost big">No camera — skip photo</button>
-    <p class="hint">The photo stays on this phone. It is never sent, and it is
-      deleted after two weeks.</p>
-  </div>
   <!-- 3.0.6: inputmode="none" keeps the phone's own keyboard (and its word
        suggestions) closed while the box keeps its cursor; the child types
        with the app's letter keys (#kb, below). A laptop or a connected
@@ -449,16 +426,6 @@ button.link { width: auto; margin: 0; background: none; border: none;
        teacher request being pending. (review, 2026-09-15) -->
   <button class="btn-send-report ghost">Send report</button>
   <button id="btn-sum-home" class="primary big">Home</button>
-</section>
-
-<!-- slice 2: the kept photos of the paper-test page (menu: Test pages) -->
-<section id="scr-pages" class="screen">
-  <h1>Test pages</h1>
-  <p class="hint">Photos of the spelling test on paper. They stay on this
-    phone, are never sent to school, and are deleted after 14 days.</p>
-  <div id="pages-list" class="pages-list"></div>
-  <img id="pages-view" class="page-photo big hidden" alt="A spelling-test page">
-  <button id="btn-pages-home" class="primary big">Home</button>
 </section>
 
 </main>
@@ -10606,7 +10573,7 @@ const CONFIG = {
   APP_NAME: 'Spelling Practice',
   // tools/publish_release.py refuses a release unless this, the built page and
   // sw.js's cache name ('spelling-app-v' + VERSION) all agree.
-  VERSION: '3.0.20',
+  VERSION: '3.0.21',
   // v3: the child types every answer and the app marks it (trim + lowercase).
   // false (3.0.5, 2026-10-13): the hint under each word is "Type it." and the
   // home screen says paper and a pen are only needed for the spelling test at
@@ -10657,10 +10624,11 @@ const CONFIG = {
   // a wrong check is corrected and the spacing restarts; after this many
   // restarts the word goes straight to the paper test.
   INLESSON_MAX_RESTARTS: 3,
-  // the paper test's page photo (pages.js): kept on the phone only, shrunk
-  // to this many pixels on its long side, deleted after this many days.
-  PAGE_MAX_PX: 1200,
-  PAGE_KEEP_DAYS: 14,
+  // 3.0.21 (2026-10-20): the two settings for the paper test's page photo
+  // (its size on the phone and the 14 days it was kept) went with the photo
+  // step (Tim, 2026-10-19: "What is the point of the photo then? Remove all
+  // reference to it."). app.js dropPagesDb deletes any photo an older
+  // version kept, once.
   // v3 slice 3a: scanning a practice code from a photo (scan.js). The photo
   // is drawn with its long side at each of these sizes in turn, smallest
   // first and never larger than the photo, until a code is found. A phone
@@ -13951,8 +13919,10 @@ const Rules = (() => {
 //   (type)    3.0.14: a walkthrough question whose answer is typed letters
 //             ("What letters does it end in?"): on screen and said, `loose`:
 //             judged without spaces, commas, hyphens or a leading "the "
-//   dictate   the paper test: "Word 1." with the word spoken, Next
-//   photo     the paper test: take a photo of the page, or skip
+//   dictate   the paper test: "Word 1." with the word spoken, Next. The
+//             paper test then goes straight to its type steps ("Type word 1
+//             exactly as it is written.", on screen only; 3.0.21, 2026-10-20:
+//             nothing comes between the two, see paper() below)
 //   reanalyse the final test was wrong; next() analyses the new attempt and
 //             runs the procedure for it (Tim: "analyse the error and repeat
 //             the process"; his flow chart: "retest without scaffolds")
@@ -14989,25 +14959,30 @@ const Procedures = (() => {
     return r;
   }
 
-  // The end-of-session paper test ("Type from page", Tim 2026-10-08):
-  // "Word 1." ... with each word spoken and nothing typed, then "Take a
-  // photo of your page.", then "Type word 1 exactly as you wrote it." ...
-  // in the same order. The screen marks each typed word as it comes and runs
-  // the correction for a miss before the next one.
-  //   words: [{ id, word }]   r.state: { taken, results: [{ id, w, right, attempt }] }
+  // The end-of-session paper test (Tim 2026-10-08; rewritten 2026-10-20,
+  // 3.0.21): "Word 1." ... with each word spoken and nothing typed (the
+  // child writes each word on its numbered line of the page), then straight
+  // to "Type word 1 exactly as it is written." ... in the same order: the
+  // grown-up types each word in exactly as it is on the page, even when it is
+  // wrong. The screen marks each typed word as it comes and runs the
+  // correction for a miss before the next one. Nothing comes between the
+  // writing and the typing any more (3.0.21; DESIGN Decision 270).
+  // 2026-10-20: the type line used to end "as you wrote it", which speaks to
+  // the child; the parent types the words in, so it now speaks to the parent
+  // (Tim, 2026-10-19: "1. Agreed."). It is on screen
+  // only: the step has no `spoken` and no `word`, so stepAudio (app.js)
+  // plays nothing on it, as before, and no voice piece is needed for it.
+  //   words: [{ id, word }]   r.state: { results: [{ id, w, right, attempt }] }
   function paper(words, ctx) {
-    const state = { taken: null, results: [] };
+    const state = { results: [] };
     const gen = (function* () {
       for (let i = 0; i < words.length; i++) {
         yield { id: 'p-word', kind: 'dictate', text: 'Word ' + (i + 1) + '.', word: norm(words[i].word), n: i + 1,
           hint: 'Write it on line ' + (i + 1) + ' of your page.' };
       }
-      const ph = yield { id: 'p-photo', kind: 'photo', text: 'Take a photo of your page.',
-        hint: 'Take it now, before you type anything.' };
-      state.taken = !!(ph && ph.taken);
       for (let i = 0; i < words.length; i++) {
         const W = norm(words[i].word);
-        const r = yield typeStep('p-type', 'Type word ' + (i + 1) + ' exactly as you wrote it.', W,
+        const r = yield typeStep('p-type', 'Type word ' + (i + 1) + ' exactly as it is written.', W,
           { paper: i + 1, pid: words[i].id, pword: W });
         state.results.push({ id: words[i].id, w: W, right: r.right, attempt: r.value });
       }
@@ -15174,7 +15149,11 @@ const Stages = (() => {
   // correction procedures run this session ({ w, type, steps }): corr counts
   // them, procs keeps up to 20 so Tim can see which steps a child needed.
   // checks: the in-lesson checks ({ w, n: 1|2, ok }); paper: the paper test
-  // ({ n, right, wrong, taken, skipped }) or null when there was none.
+  // ({ n, right, wrong }) or null when there was none. 3.0.21 (2026-10-20):
+  // the step that the record's two other fields counted is gone (DESIGN
+  // Decision 272), so the record lost them; an older report that still
+  // carries them is read as before (tools/ingest_report.py reads them with
+  // .get and ignores them).
   // No image and no name ever goes in here.
   function sessionRecord(rec) {
     const s = rec;
@@ -15191,15 +15170,13 @@ const Stages = (() => {
       corr: runs.length,
       procs: runs.slice(0, 20).map(r => ({ w: r.w, type: r.type, steps: (r.steps || []).slice() })),
       checks: (s.checks || []).slice(0, 60).map(c => ({ w: c.w, n: c.n, ok: !!c.ok })),
-      paper: p ? { n: p.n || 0, right: p.right || 0, wrong: p.wrong || 0,
-        taken: !!p.taken, skipped: !!p.skipped } : null
+      paper: p ? { n: p.n || 0, right: p.right || 0, wrong: p.wrong || 0 } : null
     };
   }
 
   // The report the family sends (v 3). STU code only, never a name: the
-  // family's name for a child lives in the device index, not in db. The
-  // page photo lives only in the phone's own database (pages.js) and is
-  // never read here.
+  // family's name for a child lives in the device index, not in db. No
+  // image ever goes in it (3.0.21: the app keeps none).
   function buildReport(db, cfg, deck, exported) {
     cfg = cfgOf(cfg);
     return {
@@ -15346,159 +15323,6 @@ const Lesson = (() => {
   }
 
   return { start, current, advance, paperList, order };
-})();
-</script>
-<script>
-// pages.js — the photo of the paper test page, kept on this phone only (v3).
-//
-// Tim (2026-10-08): "The last check of all the words from that days
-// in-session repetition cycle should be like a spelling test and done on
-// paper, with a photo taken of the page. (But I am not sure what to do with
-// the page since it has to be local and OCR doesn't work...)". He chose
-// "Type from page": the photo is shown at the top of the screen while the
-// child types each word exactly as written on the page.
-//
-// Privacy, by design:
-//   * the photo lives ONLY in this phone's own database 'spelling-v3-pages'
-//     (IndexedDB) - never in localStorage, never in a report, never sent
-//     anywhere, never read by a machine (no OCR);
-//   * it is shrunk to at most CONFIG.PAGE_MAX_PX (1200 px) as a JPEG when
-//     the phone can draw it (otherwise kept as taken);
-//   * it is deleted after CONFIG.PAGE_KEEP_DAYS (14) days, checked every
-//     time the app opens; a parent can view or delete pages sooner from the
-//     menu ("Test pages").
-// Nothing here throws: no database, no canvas, a full phone -> the promise
-// resolves with ok:false and the session goes on.
-//
-// Testable in Node: Pages.use(fakeIndexedDB) swaps the database, and the
-// clock is passed in (`now`, ms).
-const Pages = (() => {
-  const DB_NAME = 'spelling-v3-pages';     // v3's own photo database (2.x never had one)
-  const DB_VERSION = 1;
-  const STORE = 'pages';
-  const DAY = 86400000;
-  let injected = null;                     // a test's fake indexedDB
-  let injectedCanvas = undefined;          // a test's fake canvas maker (null = none)
-
-  const cfgOf = () => (typeof CONFIG !== 'undefined' ? CONFIG : {});
-  const keepDays = () => (cfgOf().PAGE_KEEP_DAYS == null ? 14 : cfgOf().PAGE_KEEP_DAYS);
-  const maxPx = () => (cfgOf().PAGE_MAX_PX == null ? 1200 : cfgOf().PAGE_MAX_PX);
-
-  function use(fakeIndexedDB, fakeCanvasMaker) {
-    injected = fakeIndexedDB || null;
-    injectedCanvas = fakeCanvasMaker;
-  }
-  function factory() {
-    if (injected) return injected;
-    try { return typeof indexedDB !== 'undefined' ? indexedDB : null; } catch (e) { return null; }
-  }
-
-  // Open (and on first use create) the app's own photo database.
-  function openDb() {
-    return new Promise(resolve => {
-      let req;
-      try {
-        const indexedDB = factory();
-        if (!indexedDB) { resolve(null); return; }
-        req = indexedDB.open(DB_NAME, DB_VERSION);
-      } catch (e) { resolve(null); return; }
-      req.onupgradeneeded = () => {
-        try {
-          const db = req.result;
-          if (!db.objectStoreNames || !db.objectStoreNames.contains(STORE)) {
-            db.createObjectStore(STORE, { keyPath: 'id', autoIncrement: true });
-          }
-        } catch (e) { /* the success handler still runs */ }
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => resolve(null);
-      req.onblocked = () => resolve(null);
-    });
-  }
-
-  // Run one request in a transaction; resolves its result, or `fail`.
-  function run(mode, fn, fail) {
-    return openDb().then(db => new Promise(resolve => {
-      if (!db) { resolve(fail); return; }
-      try {
-        const tx = db.transaction(STORE, mode);
-        const req = fn(tx.objectStore(STORE));
-        let value = fail;
-        req.onsuccess = () => { value = req.result; };
-        req.onerror = () => { value = fail; };
-        tx.oncomplete = () => resolve(value);
-        tx.onerror = () => resolve(fail);
-        tx.onabort = () => resolve(fail);
-      } catch (e) { resolve(fail); }
-    })).catch(() => fail);
-  }
-
-  // Shrink to PAGE_MAX_PX on the long side, as JPEG, when the phone can draw.
-  // Without a canvas (or on any failure) the photo is kept as taken.
-  function makeCanvas() {
-    if (injectedCanvas !== undefined) return injectedCanvas ? injectedCanvas() : null;
-    try {
-      return (typeof document !== 'undefined' && document.createElement) ? document.createElement('canvas') : null;
-    } catch (e) { return null; }
-  }
-  async function shrink(blob) {
-    try {
-      const canvas = makeCanvas();
-      if (!canvas || !canvas.getContext || typeof createImageBitmap === 'undefined') return blob;
-      const bmp = await createImageBitmap(blob);
-      const scale = Math.min(1, maxPx() / Math.max(bmp.width, bmp.height));
-      canvas.width = Math.max(1, Math.round(bmp.width * scale));
-      canvas.height = Math.max(1, Math.round(bmp.height * scale));
-      canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
-      const out = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.8));
-      return out || blob;
-    } catch (e) {
-      return blob;
-    }
-  }
-
-  // The page's day as the family reads it under "Test pages" (3.0.12: the
-  // phone's own calendar day, day.js). Display only: prune() goes by `t`.
-  const dayOf = ms => Day.local(ms);
-
-  // Keep a page photo. Resolves { ok, id, shrunk }.
-  async function save(stu, blob, now) {
-    now = now == null ? Date.now() : now;
-    if (!blob) return { ok: false };
-    const small = await shrink(blob);
-    const rec = { stu: stu || null, t: now, d: dayOf(now), type: small.type || 'image/jpeg', blob: small };
-    const id = await run('readwrite', s => s.add(rec), null);
-    return id == null ? { ok: false } : { ok: true, id, shrunk: small !== blob };
-  }
-
-  // Every kept page, newest first, WITHOUT the image (id, stu, d, t, size).
-  async function list(stu) {
-    const all = await run('readonly', s => s.getAll(), []);
-    return (all || [])
-      .filter(r => !stu || r.stu === stu)
-      .sort((a, b) => b.t - a.t)
-      .map(r => ({ id: r.id, stu: r.stu, d: r.d, t: r.t, size: r.blob && r.blob.size || 0 }));
-  }
-
-  // One page with its image (for "Test pages" -> View).
-  function get(id) {
-    return run('readonly', s => s.get(id), null);
-  }
-
-  function remove(id) {
-    return run('readwrite', s => s.delete(id), null).then(() => true);
-  }
-
-  // Delete pages older than PAGE_KEEP_DAYS. Resolves how many went.
-  async function prune(now) {
-    now = now == null ? Date.now() : now;
-    const all = await run('readonly', s => s.getAll(), []);
-    const old = (all || []).filter(r => now - r.t > keepDays() * DAY);
-    for (const r of old) await remove(r.id);
-    return old.length;
-  }
-
-  return { DB_NAME, STORE, use, save, list, get, remove, prune, openDb };
 })();
 </script>
 <script>
@@ -21449,8 +21273,11 @@ const Voice = (() => {
 // correction procedure runs straight away (procedures.js), before the next
 // word. Slice 2: every word that was corrected (or is new) is checked again
 // during the lesson (lesson.js) and once more on paper at the end of the
-// session - the child types each word from the page, with the page's photo
-// on screen; the photo stays on the phone (pages.js). The segmentation
+// session - the app says each word and the child writes it on a numbered
+// line of the page, then the grown-up types each word in exactly as it is
+// written. 3.0.21 (2026-10-20): no photo of the page is taken or kept any
+// more (Tim, 2026-10-19: "What is the point of the photo then? Remove all
+// reference to it."). The segmentation
 // ladder (Spelling Mastery decks: oral, parent-marked) is unchanged.
 // Slice 3a: a practice code can also be scanned from a photo of its QR code
 // ("Scan your code", "Scan new words"); a pasted link, an opened link and a
@@ -21467,7 +21294,6 @@ const App = (() => {
   let reloading = false;   // a new app version is taking over this page
   let session = null;
   let flow = null;         // the step runner on screen (see below)
-  let lastPhoto = null;    // the last photo save (a promise; tests await it)
 
   // ---------- persistence ----------
 
@@ -21625,8 +21451,7 @@ const App = (() => {
       counts: { again: 0, good: 0 },
       runs: [],              // correction procedures run: { w, type, steps }
       checks: [],            // in-lesson checks: { w, n, ok }
-      paper: null,           // the paper test: { n, right, wrong, taken, skipped }
-      photoUrl: null         // the page photo on screen (an object URL, this tab only)
+      paper: null            // the paper test: { n, right, wrong }
     };
   }
 
@@ -22283,12 +22108,6 @@ const App = (() => {
     box.textContent = boxText;
     box.classList.toggle('hidden', !boxText);
 
-    // The page photo sits at the top while the child types from the page.
-    const photo = $('page-photo');
-    const showPhoto = flow.mode === 'paper' && s.kind === 'type' && !!(session && session.photoUrl);
-    photo.classList.toggle('hidden', !showPhoto);
-    if (!showPhoto) photo.classList.remove('big');
-
     $('step-tiles').classList.toggle('hidden', s.kind !== 'tiles');
     if (s.kind === 'tiles') renderTiles(s);
     $('step-boxes').classList.toggle('hidden', s.kind !== 'boxes');
@@ -22298,7 +22117,6 @@ const App = (() => {
     $('step-yesno').classList.toggle('hidden', s.kind !== 'yesno');
     $('step-choice').classList.toggle('hidden', s.kind !== 'choice');
     if (s.kind === 'choice') renderChoice(s);
-    $('step-photo').classList.toggle('hidden', s.kind !== 'photo');
     $('step-type').classList.toggle('hidden', s.kind !== 'type');
     // 3.0.6: the letter keys, on a typing step only (the answer box or the
     // typing boxes; renderBoxes above already gave the first box the keys).
@@ -22661,26 +22479,27 @@ const App = (() => {
     if (!s) return;
     if (s.kind === 'done') { clearFeedback(); finishCorrection(); return; }
     if (ANSWER_KINDS.indexOf(s.kind) !== -1) return;
-    if (s.kind === 'photo' && !input) return;     // the photo step moves on by its own buttons
     clearFeedback();
     flow.runner.next(input);
     if (!flow.runner.step()) { if (flow.mode === 'paper') paperFinished(); return; }
     renderStep();
   }
 
-  // ---------- v3 slice 2: the paper test ("Type from page") ----------
-  // Tim: "The last check of all the words from that days in-session
-  // repetition cycle should be like a spelling test and done on paper, with a
-  // photo taken of the page." He chose "Type from page" (2026-10-08): the
-  // app says each word and the child writes it on numbered lines; a photo
-  // of the page is taken while the answers are still hidden; the photo is
-  // shown at the top and the child types each word exactly as written; the
-  // app marks every word and runs the correction for a miss.
+  // ---------- v3 slice 2: the paper test ----------
+  // Tim (2026-10-08): "The last check of all the words from that days
+  // in-session repetition cycle should be like a spelling test and done on
+  // paper ...". Rewritten 2026-10-20 (3.0.21): the app says each word ("Word 1.")
+  // and the child writes it on its numbered line of the page; then straight
+  // to typing: "Type word 1 exactly as it is written." and the grown-up types
+  // each word in exactly as it is on the page, even when it is wrong; the app
+  // marks every word and runs the correction for a miss. Nothing is taken or
+  // kept of the page (Tim, 2026-10-19: "What is the point of the photo then?
+  // Remove all reference to it."); the page stays with the family.
 
   function startPaper() {
     const words = Lesson.paperList(session.lesson);
     if (!words.length) { endSession(); return; }
-    session.paper = { n: words.length, right: 0, wrong: 0, taken: false, skipped: false };
+    session.paper = { n: words.length, right: 0, wrong: 0 };
     flow = { mode: 'paper', tiles: [], ticks: [], after: null, runner: null };
     flow.runner = Procedures.paper(words, ctx());
     clearFeedback();
@@ -22710,7 +22529,6 @@ const App = (() => {
     // A miss on the page: analyse it and run its correction now, then go on.
     $('step-type').classList.add('hidden');
     showKeys(false);                                  // 3.0.6: the keys go with the answer box
-    $('page-photo').classList.add('hidden');
     feedback('Word ' + s.paper + ': you wrote “' + res.value + '”. Let’s fix it.', false);
     const next = $('btn-step-next');
     next.classList.remove('hidden');
@@ -22724,26 +22542,6 @@ const App = (() => {
   function paperFinished() {
     flow = null;
     endSession();
-  }
-
-  // The photo: kept in this phone's own database only (pages.js), shown at
-  // the top of the screen while the child types from the page.
-  function photoChosen(file) {
-    if (!flow || flow.mode !== 'paper' || !file) return Promise.resolve();
-    const stu = db.stu;
-    lastPhoto = Pages.save(stu, file).then(res => {
-      if (!res || !res.ok) setStatus('The photo could not be kept on this phone. Type from the page anyway.', true);
-      return res;
-    }).catch(() => ({ ok: false }));
-    try { session.photoUrl = URL.createObjectURL(file); $('page-photo').src = session.photoUrl; } catch (e) { session.photoUrl = null; }
-    session.paper.taken = true;
-    return lastPhoto.then(() => { stepNext({ taken: true }); });
-  }
-
-  function photoSkipped() {
-    if (!flow || flow.mode !== 'paper') return;
-    session.paper.skipped = true;
-    stepNext({ taken: false });
   }
 
   function endSession() {
@@ -22770,48 +22568,9 @@ const App = (() => {
     renderBanner();
     $('req-banner-end').classList.toggle('hidden',
       !(db.pendingReq && !db.pendingReq.fulfilled));
-    try { if (session.photoUrl) URL.revokeObjectURL(session.photoUrl); } catch (e) { /* fine */ }
-    $('page-photo').classList.add('hidden');
     session = null;
     flow = null;
     show('scr-summary');
-  }
-
-  // ---------- v3 slice 2: "Test pages" (menu) ----------
-  // The parent can see and delete the kept page photos. They are deleted by
-  // themselves after CONFIG.PAGE_KEEP_DAYS days.
-  let viewUrl = null;
-  async function openPages() {
-    show('scr-pages');
-    const list = $('pages-list');
-    list.textContent = 'Looking for pages…';
-    $('pages-view').classList.add('hidden');
-    let pages = [];
-    try { pages = await Pages.list(); } catch (e) { pages = []; }
-    list.textContent = '';
-    if (!pages.length) { list.textContent = 'No test pages are kept on this phone.'; return; }
-    pages.forEach(p => {
-      const row = document.createElement('div');
-      row.className = 'page-row';
-      const label = document.createElement('span');
-      label.textContent = p.d + (profiles && profiles.order.length > 1 && p.stu ? ' — ' + Profiles.label(profiles, p.stu) : '');
-      const view = document.createElement('button');
-      view.className = 'ghost';
-      view.textContent = 'View';
-      view.onclick = async () => {
-        const rec = await Pages.get(p.id);
-        if (!rec || !rec.blob) return;
-        try { if (viewUrl) URL.revokeObjectURL(viewUrl); viewUrl = URL.createObjectURL(rec.blob); } catch (e) { return; }
-        $('pages-view').src = viewUrl;
-        $('pages-view').classList.remove('hidden');
-      };
-      const del = document.createElement('button');
-      del.className = 'link';
-      del.textContent = 'Delete';
-      del.onclick = async () => { await Pages.remove(p.id); openPages(); };
-      row.append(label, view, del);
-      list.appendChild(row);
-    });
   }
 
   // ---------- reporting ----------
@@ -22892,8 +22651,8 @@ const App = (() => {
   // to attach a screenshot of their own, then the Note last, so cutting the
   // Note to MAILTO_BODY_MAX never drops a field or that line.
   // Never in it: the family's name for the child (the device's list of
-  // children and their names is never read here), the page photo or any
-  // picture, the practice report.
+  // children and their names is never read here), any picture, the practice
+  // report.
   // Opening the panel and cancelling it change nothing in the step on screen.
   const PROBLEM_REASONS = {
     'problem-voice': 'The voice says it wrong',
@@ -23195,6 +22954,30 @@ const App = (() => {
     await importRaw(hash, 'link');      // the same path as a paste or a scan
   }
 
+  // 3.0.21 (2026-10-20): the one-time deletion of the old test-page photos.
+  // Up to 3.0.20 the paper test could keep a photo of the page in this
+  // phone's own database 'spelling-v3-pages', and the code that cleared it
+  // after 14 days went with the photo step. Without this, a photo on the
+  // trial family's phone would sit there with no way to see or delete it.
+  // Tim, 2026-10-19, asked whether to include the deletion: "Yes, include it".
+  // It runs once: the flag 'spelling-v3-pages-gone' (the day) is written only
+  // when the deletion succeeds (deleting a database that was never made also
+  // succeeds, so a new phone writes the flag and never asks again); an error
+  // or a block leaves no flag, so it is tried again the next time the app
+  // opens. Nothing is shown or said, and no database is opened.
+  function dropPagesDb() {
+    try {
+      if (localStorage.getItem('spelling-v3-pages-gone')) return;
+      if (typeof indexedDB === 'undefined' || !indexedDB || typeof indexedDB.deleteDatabase !== 'function') return;
+      const req = indexedDB.deleteDatabase('spelling-v3-pages');
+      req.onsuccess = () => {
+        try { localStorage.setItem('spelling-v3-pages-gone', today()); } catch (e) { /* tried again next open */ }
+      };
+      req.onerror = () => { /* nothing: tried again next open */ };
+      req.onblocked = () => { /* nothing: tried again next open */ };
+    } catch (e) { /* no database here: nothing kept */ }
+  }
+
   async function init() {
     // load() also carries a 2.x family's practice over to v3's keys, once per
     // child (profiles.js -> migrate.js); the 2.x record is left as it was.
@@ -23202,8 +22985,7 @@ const App = (() => {
     if (navigator.storage && navigator.storage.persist) {
       navigator.storage.persist();
     }
-    // Page photos older than PAGE_KEEP_DAYS go, every time the app opens.
-    try { Pages.prune().catch(() => {}); } catch (e) { /* no database: nothing kept */ }
+    dropPagesDb();                    // 3.0.21: once, silently (see above)
     try {
       speechSynthesis.onvoiceschanged = pickVoice;
       pickVoice();
@@ -23227,21 +23009,10 @@ const App = (() => {
     $('btn-check-done').onclick = () => { if (flow && flow.ticks.length) submit(flow.ticks.slice()); };
     $('btn-yes').onclick = () => submit('yes');
     $('btn-no').onclick = () => submit('no');
-    $('page-file').onchange = () => {
-      const f = $('page-file').files && $('page-file').files[0];
-      return photoChosen(f);
-    };
-    $('btn-photo-skip').onclick = photoSkipped;
-    $('page-photo').onclick = () => $('page-photo').classList.toggle('big');
     $('btn-seg-right').onclick = () => segGrade(true);
     $('btn-seg-wrong').onclick = () => segGrade(false);
     // A link opened during the session was kept, not applied; apply it now.
     $('btn-sum-home').onclick = async () => { await applyHashIfAny(); renderHome(); };
-    $('btn-pages-home').onclick = () => {
-      try { if (viewUrl) URL.revokeObjectURL(viewUrl); } catch (e) { /* fine */ }
-      viewUrl = null;
-      renderHome();
-    };
     $('btn-profile-switch').onclick = openPicker;
     $('btn-profile-save').onclick = saveName;
     $('btn-profile-skip').onclick = () => { justNamed = null; renderHome(); };
@@ -23282,14 +23053,6 @@ const App = (() => {
     };
     $('menu-backup').onclick = () => {
       $('menu').classList.add('hidden'); downloadReport();
-    };
-    $('menu-pages').onclick = () => {
-      $('menu').classList.add('hidden');
-      if (session) {
-        setStatus('Finish this practice session first, then look at the test pages.', true);
-        return;
-      }
-      openPages();
     };
     $('menu-scan').onclick = () => {
       $('menu').classList.add('hidden');
@@ -23447,15 +23210,6 @@ const App = (() => {
     next() { $('btn-step-next').onclick(); },
     // The screen is waiting on its "Next word" / "Fix it" button.
     pending() { return !!(flow && flow.after); },
-    // The photo step: a file "taken" through the page's own file input.
-    choosePhoto(file) {
-      const inp = $('page-file');
-      try { inp.files = [file]; } catch (e) {        // a real browser wants a FileList
-        const dt = new DataTransfer(); dt.items.add(file); inp.files = dt.files;
-      }
-      return inp.onchange();
-    },
-    skipPhoto() { $('btn-photo-skip').onclick(); },
     // Slice 3a: a photo of a code "chosen" through the page's own #scan-file
     // (3.0.6: or `inputId`, 'scan-camera', the camera's input).
     scanFile(file, inputId) {
@@ -23473,8 +23227,6 @@ const App = (() => {
       return [$('scan-help-msg').textContent].concat(lines).join(' ');
     },
     toastText() { return $('toast').classList.contains('hidden') ? '' : $('toast').textContent; },
-    photoSrc() { return $('page-photo').src || null; },
-    photoShown() { return !$('page-photo').classList.contains('hidden'); },
     screenText() { return $('step-prompt').textContent; },
     script() { return $('step-prompt').getAttribute('data-script'); },
     countText() { return $('step-count').textContent; },

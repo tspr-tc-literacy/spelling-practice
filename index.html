@@ -10573,7 +10573,7 @@ const CONFIG = {
   APP_NAME: 'Spelling Practice',
   // tools/publish_release.py refuses a release unless this, the built page and
   // sw.js's cache name ('spelling-app-v' + VERSION) all agree.
-  VERSION: '3.0.21',
+  VERSION: '3.0.22',
   // v3: the child types every answer and the app marks it (trim + lowercase).
   // false (3.0.5, 2026-10-13): the hint under each word is "Type it." and the
   // home screen says paper and a pen are only needed for the spelling test at
@@ -13954,6 +13954,8 @@ const Procedures = (() => {
   const norm = s => String(s == null ? '' : s).trim().toLowerCase().replace(/[\u2018\u2019\u02BC]/g, "'");
   const spaced = m => m.split('').join(' ');
   const plus = parts => parts.join(' + ');
+  // 3.0.22: a sentence's first letter in capitals ("Able is one morphograph.")
+  const cap = s => (s ? String(s).charAt(0).toUpperCase() + String(s).slice(1) : s);
   const cfgOf = ctx => (ctx && ctx.cfg) || (typeof CONFIG !== 'undefined' ? CONFIG : {});
   const num = (v, d) => (v == null ? d : v);
   const rulesOf = ctx => (ctx && ctx.rules) || (typeof Rules !== 'undefined' ? Rules : null);
@@ -14030,17 +14032,39 @@ const Procedures = (() => {
   // The plausible stand-ins for part p, best first: score, then those
   // introduced at or before the word's own lesson (skipped when the word has
   // no lesson), then alphabetical.
+  // 3.0.22 (2026-10-20, build loop run 20261020-b2): the ranked list is worked out once per part,
+  // kind and word - for the same types, word data, banned set and analyser - and kept (rankedCache);
+  // `exclude` is applied to the kept list. The order of the list never depended on `exclude` (it
+  // only removes entries), so every bank is exactly what it was; the inventory tool
+  // (tools/prompt_pieces.mjs), which builds the tile banks of every word some 250,000 times, spent
+  // most of its time here.
+  const rankedCache = new WeakMap();      // types -> Map(key -> list before `exclude`)
+  const objIds = new WeakMap();
+  let objNext = 1;
+  const objId = o => {
+    if (!o || (typeof o !== 'object' && typeof o !== 'function')) return 0;
+    if (!objIds.has(o)) objIds.set(o, objNext++);
+    return objIds.get(o);
+  };
   function rankedFor(p, kind, exclude, W, ctx) {
     const types = (ctx && ctx.types) || {};
     const data = ctx && ctx.data;
-    const lesson = data && data.lessons && data.lessons[W] != null ? Number(data.lessons[W]) : null;
-    const intro = lesson == null ? null : introLessons(data);
-    return Object.keys(types)
-      .filter(m => types[m] === kind && !exclude.has(m) && m !== W && teachable(m, ctx))
-      .map(m => ({ m, s: plausibility(m, p, ctx), late: intro && !(intro[m] != null && intro[m] <= lesson) ? 1 : 0 }))
-      .filter(x => x.s >= 2)
-      .sort((a, b) => b.s - a.s || a.late - b.late || (a.m < b.m ? -1 : a.m > b.m ? 1 : 0))
-      .map(x => x.m);
+    const key = [p, kind, W, objId(data), objId(ctx && ctx.banned), objId(ctx && ctx.analyser)].join('\u0000');
+    let byTypes = rankedCache.get(types);
+    if (!byTypes) { byTypes = new Map(); rankedCache.set(types, byTypes); }
+    let base = byTypes.get(key);
+    if (!base) {
+      const lesson = data && data.lessons && data.lessons[W] != null ? Number(data.lessons[W]) : null;
+      const intro = lesson == null ? null : introLessons(data);
+      base = Object.keys(types)
+        .filter(m => types[m] === kind && m !== W && teachable(m, ctx))
+        .map(m => ({ m, s: plausibility(m, p, ctx), late: intro && !(intro[m] != null && intro[m] <= lesson) ? 1 : 0 }))
+        .filter(x => x.s >= 2)
+        .sort((a, b) => b.s - a.s || a.late - b.late || (a.m < b.m ? -1 : a.m > b.m ? 1 : 0))
+        .map(x => x.m);
+      byTypes.set(key, base);
+    }
+    return base.filter(m => !exclude.has(m));
   }
   // Up to n stand-ins, round-robin across the parts in `order`: each part's
   // best one not yet taken, one per part per round.
@@ -14190,8 +14214,15 @@ const Procedures = (() => {
     .replace(/\bcvc\b/g, 'c, v, c');
   const voiced = t => unhyphen(unplus(t));
   // The split line's sentence: "The morphographs in prediction are pre, dict, i, o, n."
-  const splitSpoken = (W, parts, ctx) =>
-    voiced('The morphographs in ' + W + ' are ' + parts.map(p => saidAs(p, ctx)).join(', ') + '.');
+  // 3.0.22 (2026-10-20, build loop run 20261020-b2): a word of ONE morphograph is
+  // "<Word> is one morphograph." (the word said as itself), never "The morphographs
+  // in able are able.". Marva proposed exactly "Able is one morphograph." on
+  // 2026-10-16 and Tim said nothing against it; the line also lets the app say it
+  // from his pieces (the word's clip + "is one morphograph."). The screen still
+  // shows parts.join(' + '), which for one part is the word.
+  const oneMorphLine = W => cap(W) + ' is one morphograph.';
+  const splitSpoken = (W, parts, ctx) => (parts.length === 1 ? oneMorphLine(W) :
+    voiced('The morphographs in ' + W + ' are ' + parts.map(p => saidAs(p, ctx)).join(', ') + '.'));
   // A line that names morphograph m: Tim's text, and the same line spoken.
   const morphLine = (before, m, after, ctx) => ({ text: before + m + after, spoken: voiced(before + saidAs(m, ctx) + after) });
 
@@ -14249,7 +14280,8 @@ const Procedures = (() => {
       ? boxes(prefix + '-which-boxes', text, parts, { word: W })
       : tiles(prefix + '-which', text, bank, parts, { word: W });
   }
-  const splitLine = (W, parts) => 'The morphographs in ' + W + ' are: ' + plus(parts);
+  // 3.0.22: one part -> "<Word> is one morphograph." (splitSpoken above)
+  const splitLine = (W, parts) => (parts.length === 1 ? oneMorphLine(W) : 'The morphographs in ' + W + ' are: ' + plus(parts));
   const WALK_INTRO = "Let's go through each rule in order and see if any apply.";
 
   // Ask "Spell M." until right, teaching M before each try, up to `tries`
@@ -14645,7 +14677,9 @@ const Procedures = (() => {
     const bank = bankFor(W, parts, null, ctx, primaryOf(analysis).want);
     const r = yield firstWhich('t7', 'What are the morphographs in ' + W + '?', bank, parts, W, ctx, mode);
     if (!r.right) {
-      yield splitShow('t7-split', 'The morphographs in ' + W + ' are ' + plus(parts), W, parts, ctx);
+      // 3.0.22: a one-part word's line is "<Word> is one morphograph." here too
+      yield splitShow('t7-split', parts.length === 1 ? oneMorphLine(W) : 'The morphographs in ' + W + ' are ' + plus(parts),
+        W, parts, ctx);
       yield tiles('t7-which-again', 'What are the morphographs in ' + W + '?', bank, parts, { word: W });
     }
     yield* rulesCheck('t7', W, parts, ctx, false);
@@ -14994,7 +15028,8 @@ const Procedures = (() => {
 
   return { REGISTRY, start, correction, exposure, paper, bankFor, bankForSlot, teachingWords, bannedWords, teachable,
     judge, locate, plausibility, introLessons,
-    spellsOut, saidAs, lettersSaid };               // 3.0.5: what the voice says (app.js teachAloud)
+    spellsOut, saidAs, lettersSaid,                 // 3.0.5: what the voice says (app.js teachAloud)
+    voiced };                                       // 3.0.22: walk()'s spoken form (tests/test_pieces.mjs)
 })();
 
 // ---------- item stages ----------
@@ -15326,9 +15361,363 @@ const Lesson = (() => {
 })();
 </script>
 <script>
+// pieces-data.js - GENERATED by tools/prompt_pieces.mjs --write from the prompt-piece inventory
+// (tests/fixtures/prompt_pieces.json). Never hand-typed: change the engine, then rerun the tool;
+// `node tools/prompt_pieces.mjs --check` fails ("pieces-data matches: no") when this file is stale.
+// 3.0.22, build loop run 20261020-b2: src/audio.js Voice.tile(line) matches a spoken line against these
+// templates in this order (most literal characters first, then fewest slots, then text) and says it
+// from Tim's pieces: phrases (audio/q/<id>.mp3, by text), his 17 letter combinations (audio/c), his
+// letters (audio/l), morphograph names (audio/m) and word clips (audio/w).
+const PIECES_DATA = {
+ "version": "3.0.22",
+ "templates": [
+  {"t": "Double the final {letters} in a short word when the word ends {letters} and the next morphograph begins with {letters}. {Base} is not a short consonant-vowel-consonant morphograph: it has two vowels before the last letter.", "s": ["letters","letters","letters","Base"]},
+  {"t": "Double the final {letters} in a short word when the word ends {letters} and the next morphograph begins with {letters}. {Base} is not a short consonant-vowel-consonant morphograph: the {letters} at the end is a vowel letter.", "s": ["letters","letters","letters","Base","letters"]},
+  {"t": "Double the final {letters} in a short word when the word ends {letters} and the next morphograph begins with {letters}. {Word} is not a short consonant-vowel-consonant morphograph: the {letters} at the end is a vowel letter.", "s": ["letters","letters","letters","Word","letters"]},
+  {"t": "The morphograph is not {stem}, it is {base} (even though we have dropped the {letters} when adding {letters}). So we don't apply the doubling rule because {base} is not a short consonant-vowel-consonant morphograph.", "s": ["stem","base","letters","letters","base"]},
+  {"t": "The morphograph is not {stem}, it is {base} (even though we have dropped the {letters} when adding {morph}). So we don't apply the doubling rule because {base} is not a short consonant-vowel-consonant morphograph.", "s": ["stem","base","letters","morph","base"]},
+  {"t": "The morphograph is not {stem}, it is {letters} (even though we have dropped the {letters} when adding {letters}). So we don't apply the doubling rule because {letters} is not a short consonant-vowel-consonant morphograph.", "s": ["stem","letters","letters","letters","letters"]},
+  {"t": "The morphograph is not {stem}, it is {letters} (even though we have dropped the {letters} when adding {morph}). So we don't apply the doubling rule because {letters} is not a short consonant-vowel-consonant morphograph.", "s": ["stem","letters","letters","morph","letters"]},
+  {"t": "Double the final {letters} in a short word when the word ends {letters} and the next morphograph begins with {letters}. {Base} is not a short consonant-vowel-consonant morphograph: it is shorter than 3 letters.", "s": ["letters","letters","letters","Base"]},
+  {"t": "Double the final {letters} in a short word when the word ends {letters} and the next morphograph begins with {letters}. {Base} is not a short consonant-vowel-consonant morphograph: it is longer than 4 letters.", "s": ["letters","letters","letters","Base"]},
+  {"t": "Double the final {letters} in a short word when the word ends {letters} and the next morphograph begins with {letters}. {Word} is not a short consonant-vowel-consonant morphograph: it is longer than 4 letters.", "s": ["letters","letters","letters","Word"]},
+  {"t": "Double the final {letters} in a short word when the word ends {letters} and the next morphograph begins with {letters}. {Base} is not a short consonant-vowel-consonant morphograph: it ends in two consonants.", "s": ["letters","letters","letters","Base"]},
+  {"t": "Double the final {letters} in a short word when the word ends {letters} and the next morphograph begins with {letters}. {Base} is not a short consonant-vowel-consonant morphograph: {letters} counts as two consonants.", "s": ["letters","letters","letters","Base","letters"]},
+  {"t": "Double the final {letters} in a short word when the word ends {letters} and the next morphograph begins with {letters}. {Base} is not a short consonant-vowel-consonant morphograph: it ends in a vowel.", "s": ["letters","letters","letters","Base"]},
+  {"t": "Double the final {letters} in a short word when the word ends {letters} and the next morphograph begins with {letters}. The next morphograph is {letters}. It does not begin with a vowel.", "s": ["letters","letters","letters","letters"]},
+  {"t": "Drop the final {letters} from a word when the next morphograph begins with a vowel letter. The next morphograph is {letters}. It begins with {letters}, a consonant letter.", "s": ["letters","letters","letters"]},
+  {"t": "{Letters} counts as a vowel at the end of a morphograph. When it is the only letter in the morphograph it counts as being at the end of the morphograph.", "s": ["Letters"]},
+  {"t": "Change the {letters} to {letters} in a word when the word ends with a {letters} and the next morphograph begins with anything except {letters}. {Base} does not end with a {letters}.", "s": ["letters","letters","letters","letters","Base","letters"]},
+  {"t": "Change the {letters} to {letters} in a word when the word ends with a {letters} and the next morphograph begins with anything except {letters}. {Word} does not end with a {letters}.", "s": ["letters","letters","letters","letters","Word","letters"]},
+  {"t": "Change the {letters} to {letters} in a word when the word ends with a {letters} and the next morphograph begins with anything except {letters}. {Morph} begins with an {letters}.", "s": ["letters","letters","letters","letters","Morph","letters"]},
+  {"t": "Double the final {letters} in a short word when the word ends {letters} and the next morphograph begins with {letters}. {Morph} does not begin with a vowel.", "s": ["letters","letters","letters","Morph"]},
+  {"t": "Change the {letters} to {letters} in a word when the word ends with a {letters} and the next morphograph begins with anything except {letters}. {Base} ends with a {letters}.", "s": ["letters","letters","letters","letters","Base","letters"]},
+  {"t": "The {letters} to {letters} rule: Change the {letters} to {letters} in a word when the word ends with a {letters} and the next morphograph begins with anything except {letters}.", "s": ["letters","letters","letters","letters","letters","letters"]},
+  {"t": "Drop the final {letters} from a word when the next morphograph begins with a vowel letter. {Morph} begins with {letters}, a consonant letter.", "s": ["letters","Morph","letters"]},
+  {"t": "The doubling rule: Double the final {letters} in a short word when the word ends {letters} and the next morphograph begins with {letters}.", "s": ["letters","letters","letters"]},
+  {"t": "Change the {letters} to {letters} in a word when the word ends with a {letters} and the next morphograph begins with anything except {letters}.", "s": ["letters","letters","letters","letters"]},
+  {"t": "Drop the final {letters} from a word when the next morphograph begins with a vowel letter. {Base} does not end in {letters}.", "s": ["letters","Base","letters"]},
+  {"t": "Drop the final {letters} from a word when the next morphograph begins with a vowel letter. {Word} does not end in {letters}.", "s": ["letters","Word","letters"]},
+  {"t": "The final {letters} rule: Drop the final {letters} from a word when the next morphograph begins with a vowel letter.", "s": ["letters","letters"]},
+  {"t": "If a word ends in {letters}; {letters}; {letters}; {letters}; {letters}; or {letters}, you add {letters} to make the plural word. {Base} does not end in {letters}; {letters}; {letters}; {letters}; {letters}; or {letters}.", "s": ["letters","letters","letters","letters","letters","letters","letters","Base","letters","letters","letters","letters","letters","letters"]},
+  {"t": "If a word ends in {letters}; {letters}; {letters}; {letters}; {letters}; or {letters}, you add {letters} to make the plural word. {Word} does not end in {letters}; {letters}; {letters}; {letters}; {letters}; or {letters}.", "s": ["letters","letters","letters","letters","letters","letters","letters","Word","letters","letters","letters","letters","letters","letters"]},
+  {"t": "{Base} is not a short consonant-vowel-consonant morphograph: it has two vowels before the last letter.", "s": ["Base"]},
+  {"t": "Double the final {letters} in a short word when the word ends {letters} and the next morphograph begins with {letters}.", "s": ["letters","letters","letters"]},
+  {"t": "{Base} is not a short consonant-vowel-consonant morphograph: the {letters} at the end is a vowel letter.", "s": ["Base","letters"]},
+  {"t": "{Word} is not a short consonant-vowel-consonant morphograph: the {letters} at the end is a vowel letter.", "s": ["Word","letters"]},
+  {"t": "{Base} is not a short consonant-vowel-consonant morphograph: it is shorter than 3 letters.", "s": ["Base"]},
+  {"t": "The {letters} plural rule: If a word ends in {letters}; {letters}; {letters}; {letters}; {letters}; or {letters}, you add {letters} to make the plural word.", "s": ["letters","letters","letters","letters","letters","letters","letters","letters"]},
+  {"t": "{Base} is not a short consonant-vowel-consonant morphograph: it is longer than 4 letters.", "s": ["Base"]},
+  {"t": "{Word} is not a short consonant-vowel-consonant morphograph: it is longer than 4 letters.", "s": ["Word"]},
+  {"t": "The next morphograph is {letters}. Does it begin with a vowel letter or a consonant letter?", "s": ["letters"]},
+  {"t": "The next morphograph is {morph}. Does it begin with a vowel letter or a consonant letter?", "s": ["morph"]},
+  {"t": "Drop the final {letters} from a word when the next morphograph begins with a vowel letter.", "s": ["letters"]},
+  {"t": "{Base} is not a short consonant-vowel-consonant morphograph: it ends in two consonants.", "s": ["Base"]},
+  {"t": "{Base} is not a short consonant-vowel-consonant morphograph: {letters} counts as two consonants.", "s": ["Base","letters"]},
+  {"t": "When the word ends in the letters {letters}, you must add the morphograph {morph} before adding {morph}.", "s": ["letters","morph","morph"]},
+  {"t": "If you can hear the {letters}, then the plural is spelled {letters}. You cannot hear the {letters} in {word}.", "s": ["letters","letters","letters","word"]},
+  {"t": "{Base} is not a short consonant-vowel-consonant morphograph: it ends in a vowel.", "s": ["Base"]},
+  {"t": "The {letters} plural rule: If you can hear the {letters}, then the plural is spelled {letters}.", "s": ["letters","letters","letters"]},
+  {"t": "Use {letters} if a form of the word ends {letters}. There is no form of {base} that ends {letters}.", "s": ["letters","letters","base","letters"]},
+  {"t": "Use {letters} if a form of the word ends {letters}. There is no form of {word} that ends {letters}.", "s": ["letters","letters","word","letters"]},
+  {"t": "If a word ends in {letters}; {letters}; {letters}; {letters}; {letters}; or {letters}, you add {letters} to make the plural word.", "s": ["letters","letters","letters","letters","letters","letters","letters"]},
+  {"t": "The next morphograph is {letters}. It begins with {letters}, a consonant letter.", "s": ["letters","letters"]},
+  {"t": "The next morphograph is {letters}. It begins with {letters}, a vowel letter.", "s": ["letters","letters"]},
+  {"t": "When a word ends with the letter {letters} and you add {morph}, drop the {letters}.", "s": ["letters","morph","letters"]},
+  {"t": "Let's go through each rule in order and see if any apply.", "s": []},
+  {"t": "The next morphograph is {letters}. It does not begin with a vowel.", "s": ["letters"]},
+  {"t": "If a word ends with a {letters}, you add {letters} to make the plural word.", "s": ["letters","letters"]},
+  {"t": "The next morphograph is {letters}. Does it begin with a vowel?", "s": ["letters"]},
+  {"t": "The next morphograph is {morph}. Does it begin with a vowel?", "s": ["morph"]},
+  {"t": "The next morphograph is {letters}. It does not begin with an {letters}.", "s": ["letters","letters"]},
+  {"t": "If we add {letters} to {base}, what other rule do we need to apply?", "s": ["letters","base"]},
+  {"t": "Why don't we apply the doubling rule when adding {base}, {letters}?", "s": ["base","letters"]},
+  {"t": "Why don't we apply the doubling rule when adding {base}, {morph}?", "s": ["base","morph"]},
+  {"t": "Why don't we apply the doubling rule when adding {letters}, {morph}?", "s": ["letters","morph"]},
+  {"t": "Let's spell some words with the morphograph {letters} in it.", "s": ["letters"]},
+  {"t": "Let's spell some words with the morphograph {morph} in it.", "s": ["morph"]},
+  {"t": "Why don't we apply the {letters} plural rule when adding {base}, {letters}?", "s": ["letters","base","letters"]},
+  {"t": "Is {base} a short consonant-vowel-consonant morphograph?", "s": ["base"]},
+  {"t": "Is {word} a short consonant-vowel-consonant morphograph?", "s": ["word"]},
+  {"t": "Why don't we apply the doubling rule when adding {letters}?", "s": ["letters"]},
+  {"t": "{Base} is a short consonant-vowel-consonant morphograph.", "s": ["Base"]},
+  {"t": "If you can hear the {letters}, then the plural is spelled {letters}.", "s": ["letters","letters"]},
+  {"t": "Why don't we apply the final {letters} rule when adding {base}, {letters}?", "s": ["letters","base","letters"]},
+  {"t": "Why don't we apply the final {letters} rule when adding {base}, {morph}?", "s": ["letters","base","morph"]},
+  {"t": "Why don't we apply the final {letters} rule when adding {letters}, {morph}?", "s": ["letters","letters","morph"]},
+  {"t": "The next morphograph is {letters}. It begins with a vowel.", "s": ["letters"]},
+  {"t": "The next morphograph is {letters}. Does it begin with an {letters}?", "s": ["letters","letters"]},
+  {"t": "The next morphograph is {morph}. Does it begin with an {letters}?", "s": ["morph","letters"]},
+  {"t": "Why don't we apply the {letters} plural rule when adding {letters}?", "s": ["letters","letters"]},
+  {"t": "Why don't we apply the final {letters} rule when adding {letters}?", "s": ["letters","letters"]},
+  {"t": "Why don't we apply the {letters} to {letters} rule when adding {base}, {letters}?", "s": ["letters","letters","base","letters"]},
+  {"t": "Why don't we apply the {letters} to {letters} rule when adding {base}, {morph}?", "s": ["letters","letters","base","morph"]},
+  {"t": "Why don't we apply the {letters} to {letters} rule when adding {letters}, {morph}?", "s": ["letters","letters","letters","morph"]},
+  {"t": "So what morphograph do we add before the {morph} in {word}?", "s": ["morph","word"]},
+  {"t": "Why don't we apply the {letters} to {letters} rule when adding {letters}?", "s": ["letters","letters","letters"]},
+  {"t": "So what letters do you add to make the word {word}?", "s": ["word"]},
+  {"t": "So how do we spell the last morphograph in {word}?", "s": ["word"]},
+  {"t": "The {letters} rule: Use {letters} if a form of the word ends {letters}.", "s": ["letters","letters","letters"]},
+  {"t": "Why don't we apply the {letters} rule when adding {base}, {morph}?", "s": ["letters","base","morph"]},
+  {"t": "Why don't we apply the {letters} rule when adding {letters}, {morph}?", "s": ["letters","letters","morph"]},
+  {"t": "So do we drop the {letters} from {morph} when we write {word}?", "s": ["letters","morph","word"]},
+  {"t": "Listen: {base}. What letters does it end in?", "s": ["base"]},
+  {"t": "Yes, {base} ends with {letters}, so we add {letters} to make {word}.", "s": ["base","letters","letters","word"]},
+  {"t": "Listen: {base}. What letter does it end in?", "s": ["base"]},
+  {"t": "Listen: {word}. What letter does it end in?", "s": ["word"]},
+  {"t": "Yes, {base} ends with {letters} so we add {letters} to make {word}.", "s": ["base","letters","letters","word"]},
+  {"t": "Yes, {word} ends with {letters} so we add {letters} to make {word}.", "s": ["word","letters","letters","word"]},
+  {"t": "Do we drop the final {letters} from the word?", "s": ["letters"]},
+  {"t": "The answer is: A consonant letter.", "s": []},
+  {"t": "How do you spell the morphograph {letters}?", "s": ["letters"]},
+  {"t": "How do you spell the morphograph {morph}?", "s": ["morph"]},
+  {"t": "What is the first morphograph in {word}?", "s": ["word"]},
+  {"t": "{Morph} begins with {letters}, a consonant letter.", "s": ["Morph","letters"]},
+  {"t": "The morphographs in {word} are {morph}, {morph}, {letters}, {morph}, {morph}.", "s": ["word","morph","morph","letters","morph","morph"]},
+  {"t": "What is the last morphograph in {word}?", "s": ["word"]},
+  {"t": "What is the next morphograph in {word}?", "s": ["word"]},
+  {"t": "Use {letters} if a form of the word ends {letters}.", "s": ["letters","letters"]},
+  {"t": "So does the doubling rule apply?", "s": []},
+  {"t": "The morphographs in {word} are {morph}, {letters}, {morph}, {letters}.", "s": ["word","morph","letters","morph","letters"]},
+  {"t": "The morphographs in {word} are {morph}, {letters}, {morph}, {morph}.", "s": ["word","morph","letters","morph","morph"]},
+  {"t": "The morphographs in {word} are {morph}, {morph}, {letters}, {morph}.", "s": ["word","morph","morph","letters","morph"]},
+  {"t": "The morphographs in {word} are {morph}, {morph}, {morph}, {letters}.", "s": ["word","morph","morph","morph","letters"]},
+  {"t": "The morphographs in {word} are {morph}, {morph}, {morph}, {morph}.", "s": ["word","morph","morph","morph","morph"]},
+  {"t": "Is there a form of {base} that ends {letters}?", "s": ["base","letters"]},
+  {"t": "Is there a form of {word} that ends {letters}?", "s": ["word","letters"]},
+  {"t": "The answer is: A vowel letter.", "s": []},
+  {"t": "So does the final {letters} rule apply?", "s": ["letters"]},
+  {"t": "The first morphograph in {word} is {morph}.", "s": ["word","morph"]},
+  {"t": "{Morph} begins with {letters}, a vowel letter.", "s": ["Morph","letters"]},
+  {"t": "The morphographs in {word} are {morph}, {letters}, {morph}.", "s": ["word","morph","letters","morph"]},
+  {"t": "The morphographs in {word} are {morph}, {morph}, {letters}.", "s": ["word","morph","morph","letters"]},
+  {"t": "The morphographs in {word} are {morph}, {morph}, {morph}.", "s": ["word","morph","morph","morph"]},
+  {"t": "This morphograph is spelled {letters}.", "s": ["letters"]},
+  {"t": "{Morph} does not begin with a vowel.", "s": ["Morph"]},
+  {"t": "The answer is: the {letters} to {letters} rule.", "s": ["letters","letters"]},
+  {"t": "The last morphograph in {word} is {letters}.", "s": ["word","letters"]},
+  {"t": "The last morphograph in {word} is {morph}.", "s": ["word","morph"]},
+  {"t": "The next morphograph in {word} is {letters}.", "s": ["word","letters"]},
+  {"t": "The next morphograph in {word} is {morph}.", "s": ["word","morph"]},
+  {"t": "So does the {letters} to {letters} rule apply?", "s": ["letters","letters"]},
+  {"t": "The morphographs in {word} are {morph}, {letters}.", "s": ["word","morph","letters"]},
+  {"t": "The morphographs in {word} are {morph}, {morph}.", "s": ["word","morph","morph"]},
+  {"t": "This morphograph is spelled", "s": []},
+  {"t": "Does {base} end with the letter {letters}?", "s": ["base","letters"]},
+  {"t": "What is the doubling rule?", "s": []},
+  {"t": "What letters does {base} end in?", "s": ["base"]},
+  {"t": "What letters does {word} end in?", "s": ["word"]},
+  {"t": "So do we double a letter?", "s": []},
+  {"t": "What letter do we double?", "s": []},
+  {"t": "What is the {letters} plural rule?", "s": ["letters"]},
+  {"t": "{Morph} does not begin with an {letters}.", "s": ["Morph","letters"]},
+  {"t": "What is the final {letters} rule?", "s": ["letters"]},
+  {"t": "Spell the morphograph {letters}.", "s": ["letters"]},
+  {"t": "Spell the morphograph {morph}.", "s": ["morph"]},
+  {"t": "{Base} ends with the letter {letters}.", "s": ["Base","letters"]},
+  {"t": "Can you hear the {letters} in {word}?", "s": ["letters","word"]},
+  {"t": "Do we change the {letters} to {letters}?", "s": ["letters","letters"]},
+  {"t": "What is the {letters} to {letters} rule?", "s": ["letters","letters"]},
+  {"t": "You can hear the {letters} in {word}.", "s": ["letters","word"]},
+  {"t": "{Base} does not end with a {letters}.", "s": ["Base","letters"]},
+  {"t": "{Word} does not end with a {letters}.", "s": ["Word","letters"]},
+  {"t": "{Morph} begins with a vowel.", "s": ["Morph"]},
+  {"t": "{Morph} is one morphograph.", "s": ["Morph"]},
+  {"t": "Do any rules apply?", "s": []},
+  {"t": "We double the {letters} in {base}.", "s": ["letters","base"]},
+  {"t": "A form of {base} ends {letters}: {word}.", "s": ["base","letters","word"]},
+  {"t": "A form of {word} ends {letters}: {word}.", "s": ["word","letters","word"]},
+  {"t": "So no rules apply.", "s": []},
+  {"t": "The answer is yes.", "s": []},
+  {"t": "What is the {letters} rule?", "s": ["letters"]},
+  {"t": "Does {base} end with a {letters}?", "s": ["base","letters"]},
+  {"t": "Does {word} end with a {letters}?", "s": ["word","letters"]},
+  {"t": "{Base} does not end in {letters}.", "s": ["Base","letters"]},
+  {"t": "{Word} does not end in {letters}.", "s": ["Word","letters"]},
+  {"t": "The answer is no.", "s": []},
+  {"t": "How do we spell {word}?", "s": ["word"]},
+  {"t": "So {word} is spelled: {letters}.", "s": ["word","letters"]},
+  {"t": "{Morph} begins with an {letters}.", "s": ["Morph","letters"]},
+  {"t": "The answer is {letters}.", "s": ["letters"]},
+  {"t": "The answer is {morph}.", "s": ["morph"]},
+  {"t": "Does {base} end in {letters}?", "s": ["base","letters"]},
+  {"t": "Does {word} end in {letters}?", "s": ["word","letters"]},
+  {"t": "{Base} ends with a {letters}.", "s": ["Base","letters"]},
+  {"t": "{Word} ends with a {letters}.", "s": ["Word","letters"]},
+  {"t": "{morph} is spelled {letters}.", "s": ["morph","letters"]},
+  {"t": "{word} is spelled {letters}.", "s": ["word","letters"]},
+  {"t": "Now spell {word}.", "s": ["word"]},
+  {"t": "{morph} is spelled", "s": ["morph"]},
+  {"t": "{word} is spelled", "s": ["word"]},
+  {"t": "is spelled", "s": []},
+  {"t": "{Base} ends in {letters}.", "s": ["Base","letters"]},
+  {"t": "{Word} ends in {letters}.", "s": ["Word","letters"]},
+  {"t": "Spell {letters}.", "s": ["letters"]},
+  {"t": "Spell {morph}.", "s": ["morph"]},
+  {"t": "Spell {word}.", "s": ["word"]}
+ ],
+ "phrases": {
+  "A form of": "a-form-of",
+  "Can you hear the": "can-you-hear-the",
+  "Change the": "change-the",
+  "Do any rules apply?": "do-any-rules-apply",
+  "Do we change the": "do-we-change-the",
+  "Do we drop the final": "do-we-drop-the-final",
+  "Does": "does-0ae736c9",
+  "Does it begin with a vowel letter or a consonant letter?": "does-it-begin-with-a-vowel-letter-or-a-fdb65534",
+  "Does it begin with a vowel?": "does-it-begin-with-a-vowel",
+  "Does it begin with an": "does-it-begin-with-an",
+  "Double the final": "double-the-final",
+  "Drop the final": "drop-the-final",
+  "How do we spell": "how-do-we-spell",
+  "How do you spell the morphograph": "how-do-you-spell-the-morphograph",
+  "If a word ends in": "if-a-word-ends-in",
+  "If a word ends with a": "if-a-word-ends-with-a",
+  "If we add": "if-we-add",
+  "If you can hear the": "if-you-can-hear-the",
+  "Is": "is-079bc3b6",
+  "Is there a form of": "is-there-a-form-of",
+  "It begins with": "it-begins-with",
+  "It begins with a vowel.": "it-begins-with-a-vowel",
+  "It does not begin with a vowel.": "it-does-not-begin-with-a-vowel",
+  "It does not begin with an": "it-does-not-begin-with-an",
+  "Let's go through each rule in order and see if any apply.": "lets-go-through-each-rule-in-order-and-2c2468b4",
+  "Let's spell some words with the morphograph": "lets-spell-some-words-with-the-morphograph",
+  "Listen:": "listen",
+  "Now spell": "now-spell",
+  "So": "so",
+  "So do we double a letter?": "so-do-we-double-a-letter",
+  "So do we drop the": "so-do-we-drop-the",
+  "So does the": "so-does-the",
+  "So does the doubling rule apply?": "so-does-the-doubling-rule-apply",
+  "So does the final": "so-does-the-final",
+  "So how do we spell the last morphograph in": "so-how-do-we-spell-the-last-morphograph-in",
+  "So no rules apply.": "so-no-rules-apply",
+  "So we don't apply the doubling rule because": "so-we-dont-apply-the-doubling-rule-because",
+  "So what letters do you add to make the word": "so-what-letters-do-you-add-to-make-the-word",
+  "So what morphograph do we add before the": "so-what-morphograph-do-we-add-before-the",
+  "Spell": "spell-2747aac6",
+  "Spell the morphograph": "spell-the-morphograph",
+  "The": "the",
+  "The answer is": "the-answer-is",
+  "The answer is no.": "the-answer-is-no",
+  "The answer is yes.": "the-answer-is-yes",
+  "The answer is: A consonant letter.": "the-answer-is-a-consonant-letter",
+  "The answer is: A vowel letter.": "the-answer-is-a-vowel-letter",
+  "The answer is: the": "the-answer-is-the",
+  "The doubling rule: Double the final": "the-doubling-rule-double-the-final",
+  "The final": "the-final",
+  "The first morphograph in": "the-first-morphograph-in",
+  "The last morphograph in": "the-last-morphograph-in",
+  "The morphograph is not": "the-morphograph-is-not",
+  "The morphographs in": "the-morphographs-in",
+  "The next morphograph in": "the-next-morphograph-in",
+  "The next morphograph is": "the-next-morphograph-is",
+  "There is no form of": "there-is-no-form-of",
+  "This morphograph is spelled": "this-morphograph-is-spelled",
+  "Use": "use-1d4d43cc",
+  "We double the": "we-double-the",
+  "What is the": "what-is-the",
+  "What is the doubling rule?": "what-is-the-doubling-rule",
+  "What is the final": "what-is-the-final",
+  "What is the first morphograph in": "what-is-the-first-morphograph-in",
+  "What is the last morphograph in": "what-is-the-last-morphograph-in",
+  "What is the next morphograph in": "what-is-the-next-morphograph-in",
+  "What letter do we double?": "what-letter-do-we-double",
+  "What letter does it end in?": "what-letter-does-it-end-in",
+  "What letters does": "what-letters-does",
+  "What letters does it end in?": "what-letters-does-it-end-in",
+  "When a word ends with the letter": "when-a-word-ends-with-the-letter",
+  "When it is the only letter in the morphograph it counts as being at the end of the morphograph.": "when-it-is-the-only-letter-in-the-morph-ceb7ce9f",
+  "When the word ends in the letters": "when-the-word-ends-in-the-letters",
+  "Why don't we apply the": "why-dont-we-apply-the",
+  "Why don't we apply the doubling rule when adding": "why-dont-we-apply-the-doubling-rule-when-adding",
+  "Why don't we apply the final": "why-dont-we-apply-the-final",
+  "Yes,": "yes",
+  "You can hear the": "you-can-hear-the",
+  "You cannot hear the": "you-cannot-hear-the",
+  "a consonant letter.": "a-consonant-letter",
+  "a short consonant-vowel-consonant morphograph?": "a-short-consonant-vowel-consonant-morphograph",
+  "a vowel letter.": "a-vowel-letter",
+  "and the next morphograph begins with": "and-the-next-morphograph-begins-with",
+  "and the next morphograph begins with anything except": "and-the-next-morphograph-begins-with-an-2b181396",
+  "and you add": "and-you-add",
+  "are": "are-5f9e5802",
+  "at the end is a vowel letter.": "at-the-end-is-a-vowel-letter",
+  "before adding": "before-adding",
+  "begins with": "begins-with",
+  "begins with a vowel.": "begins-with-a-vowel",
+  "begins with an": "begins-with-an",
+  "counts as a vowel at the end of a morphograph.": "counts-as-a-vowel-at-the-end-of-a-morphograph",
+  "counts as two consonants.": "counts-as-two-consonants",
+  "does not begin with a vowel.": "does-not-begin-with-a-vowel",
+  "does not begin with an": "does-not-begin-with-an",
+  "does not end in": "does-not-end-in",
+  "does not end with a": "does-not-end-with-a",
+  "drop the": "drop-the",
+  "end in": "end-in-aaf9c7ce",
+  "end in?": "end-in-4cdde2ba",
+  "end with a": "end-with-a",
+  "end with the letter": "end-with-the-letter",
+  "ends": "ends",
+  "ends in": "ends-in",
+  "ends with": "ends-with",
+  "ends with a": "ends-with-a",
+  "ends with the letter": "ends-with-the-letter",
+  "even though we have dropped the": "even-though-we-have-dropped-the",
+  "from": "from",
+  "from a word when the next morphograph begins with a vowel letter.": "from-a-word-when-the-next-morphograph-b-46a3e1fe",
+  "from the word?": "from-the-word",
+  "if a form of the word ends": "if-a-form-of-the-word-ends",
+  "in": "in-af10ef20",
+  "in a short word when the word ends": "in-a-short-word-when-the-word-ends",
+  "in a word when the word ends with a": "in-a-word-when-the-word-ends-with-a",
+  "in it.": "in-it",
+  "is": "is-b47f363e",
+  "is a short consonant-vowel-consonant morphograph.": "is-a-short-consonant-vowel-consonant-morphograph",
+  "is not a short consonant-vowel-consonant morphograph.": "is-not-a-short-consonant-vowel-consonan-c926ab9c",
+  "is not a short consonant-vowel-consonant morphograph:": "is-not-a-short-consonant-vowel-consonan-d60e9a22",
+  "is not a short consonant-vowel-consonant morphograph: it ends in a vowel.": "is-not-a-short-consonant-vowel-consonan-9853c5dd",
+  "is not a short consonant-vowel-consonant morphograph: it ends in two consonants.": "is-not-a-short-consonant-vowel-consonan-ffec7849",
+  "is not a short consonant-vowel-consonant morphograph: it has two vowels before the last letter.": "is-not-a-short-consonant-vowel-consonan-37dca0df",
+  "is not a short consonant-vowel-consonant morphograph: it is longer than 4 letters.": "is-not-a-short-consonant-vowel-consonan-50799b66",
+  "is not a short consonant-vowel-consonant morphograph: it is shorter than 3 letters.": "is-not-a-short-consonant-vowel-consonan-78cbe2b0",
+  "is not a short consonant-vowel-consonant morphograph: the": "is-not-a-short-consonant-vowel-consonan-6473dfde",
+  "is one morphograph.": "is-one-morphograph",
+  "is spelled": "is-spelled-1a1d97e8",
+  "is spelled:": "is-spelled-f0a5d6a0",
+  "it is": "it-is",
+  "or": "or-1758356d",
+  "plural rule when adding": "plural-rule-when-adding",
+  "plural rule: If a word ends in": "plural-rule-if-a-word-ends-in",
+  "plural rule: If you can hear the": "plural-rule-if-you-can-hear-the",
+  "plural rule?": "plural-rule",
+  "rule apply?": "rule-apply",
+  "rule when adding": "rule-when-adding",
+  "rule.": "rule-7a044c19",
+  "rule: Change the": "rule-change-the",
+  "rule: Drop the final": "rule-drop-the-final",
+  "rule: Use": "rule-use",
+  "rule?": "rule-d4040134",
+  "so we add": "so-we-add",
+  "that ends": "that-ends",
+  "then the plural is spelled": "then-the-plural-is-spelled",
+  "to": "to",
+  "to make": "to-make",
+  "to make the plural word.": "to-make-the-plural-word",
+  "what other rule do we need to apply?": "what-other-rule-do-we-need-to-apply",
+  "when adding": "when-adding",
+  "when we write": "when-we-write",
+  "you add": "you-add",
+  "you must add the morphograph": "you-must-add-the-morphograph"
+ },
+ "combinations": ["sh","ch","consonant-and-y","or","er","ves","cvc","ion","es","ic","ed","ial","ian","ise","ous","ual","ure"],
+ "spellOut": ["ion","es","ves","ch","sh","ic","y","ed","ial","ian","ise","ous","ual","ure"]
+};
+</script>
+<script>
 const AUDIO_MANIFEST = {
 "voice": "tim-take1-dictation",
-"reference": "PocketTTS1-takeB.wav",
 "generated": "2026-10-11",
 "words": [
 "a",
@@ -20926,8 +21315,608 @@ const AUDIO_MANIFEST = {
 "y": "5d879673",
 "z": "e9a401d7",
 "zh": "028f00fe"
+},
+"m": {
+"able": "d94d2c86",
+"ac": "45248d24",
+"ad": "c840defb",
+"age": "c4ab8652",
+"agree": "470b56fc",
+"al": "98c4a18d",
+"ap": "dbc893ab",
+"art": "37c2b413",
+"at": "6ad9cc38",
+"ate": "1d14d430",
+"be": "a997135e",
+"ceed": "ebe2f548",
+"cept": "cb4dfd79",
+"cern": "27e272ce",
+"cess": "4fa37004",
+"child": "7c9e87bb",
+"cise": "99602dfa",
+"clude": "c8ca5743",
+"com": "7803c8dc",
+"con": "cc238d24",
+"copy": "fd9a256b",
+"cord": "24ac429f",
+"crease": "fa348415",
+"de": "d7728549",
+"desire": "75ff3765",
+"di": "2561937d",
+"dict": "36fb40d0",
+"diet": "e8b67959",
+"dis": "e63d6c5b",
+"duce": "f7b6ed10",
+"elf": "dec40aa4",
+"en": "1bed9e4d",
+"er": "8e58909d",
+"ern": "6ae3a244",
+"est": "37203a01",
+"ex": "e2b9e02b",
+"fess": "4db0f504",
+"firm": "ef72c63e",
+"fix": "e2c3619d",
+"fool": "81318bc5",
+"for": "f8638fee",
+"fore": "0352125f",
+"front": "2f053438",
+"ful": "1bb79151",
+"gin": "2cb5f5e9",
+"grace": "5f8f8ad7",
+"gun": "e8e23fd4",
+"halve": "f53b277c",
+"harp": "652c90f6",
+"hilar": "ff8125f3",
+"hood": "e789e46b",
+"ice": "2069fed2",
+"im": "a0c826de",
+"in": "9b9dce79",
+"ine": "8ae75532",
+"ing": "dc63f1ae",
+"inspect": "89a22322",
+"inter": "750cb071",
+"intro": "11d04ba6",
+"ish": "7562d3db",
+"ism": "3f137db5",
+"ist": "41257028",
+"ite": "06662d39",
+"ive": "327d9052",
+"kind": "3f5b29fc",
+"lead": "363b5269",
+"lect": "c9b666c4",
+"less": "6e25609a",
+"link": "2bf857b6",
+"load": "f5b8d078",
+"luck": "c34121de",
+"ly": "3fffed14",
+"ment": "b06c2c0c",
+"mis": "d900a7b3",
+"mise": "8bf46b15",
+"mix": "b9d4d979",
+"most": "d9188793",
+"mote": "4dcc2e2c",
+"ness": "a0a00772",
+"ob": "03e16598",
+"or": "531217a2",
+"over": "cfa56e64",
+"pare": "725979ea",
+"pause": "8e784844",
+"pay": "9790826c",
+"pense": "b048398b",
+"per": "72b4b6cd",
+"pict": "cdaa824c",
+"pity": "66a0d661",
+"plete": "5d81c16d",
+"plore": "1dc944aa",
+"pre": "3b83e6b4",
+"pro": "ec2a7664",
+"pute": "84d28426",
+"quire": "8c71406b",
+"rate": "be32aedf",
+"re": "d0ff32e0",
+"rect": "5f4e566d",
+"se": "1994993a",
+"ship": "d0f22274",
+"short": "fcf16d04",
+"soci": "bee5a53b",
+"stant": "b0ac8bd5",
+"sub": "45e3232f",
+"sume": "b1c2e537",
+"sun": "7b9d091f",
+"sup": "d7664117",
+"super": "37b1fb61",
+"sur": "8ad176c8",
+"thing": "773b1a7e",
+"trans": "ca320798",
+"trol": "40e38ca0",
+"trot": "4a9d69dc",
+"trust": "ca55be11",
+"turb": "844a3c94",
+"un": "858cb9ca",
+"up": "cdc76776",
+"vert": "68cc2f41",
+"vide": "cc983748",
+"vise": "713a7ac1",
+"ward": "8510fe5d",
+"wax": "d486f19a",
+"wind": "2138be2d",
+"worth": "4ae000b0"
+},
+"q": {
+"a-consonant-letter": "bc14d837",
+"a-form-of": "ac51fc85",
+"a-short-consonant-vowel-consonant-morphograph": "03497d22",
+"a-vowel-letter": "b8dacd91",
+"and-the-next-morphograph-begins-with": "4b4acebc",
+"and-the-next-morphograph-begins-with-an-2b181396": "84c16df0",
+"and-you-add": "ae766e27",
+"are-5f9e5802": "d12b2aee",
+"at-the-end-is-a-vowel-letter": "044a6bc4",
+"before-adding": "32ed4bdd",
+"begins-with": "04e84c88",
+"begins-with-a-vowel": "851deeec",
+"begins-with-an": "c7e67f28",
+"can-you-hear-the": "b9ff9b60",
+"change-the": "2c9f01f4",
+"counts-as-a-vowel-at-the-end-of-a-morphograph": "9aa2d164",
+"counts-as-two-consonants": "b7397c97",
+"do-any-rules-apply": "c47998e6",
+"do-we-change-the": "f130317d",
+"do-we-drop-the-final": "975d4130",
+"does-0ae736c9": "c93344c4",
+"does-it-begin-with-a-vowel": "53dced86",
+"does-it-begin-with-a-vowel-letter-or-a-fdb65534": "d2b99554",
+"does-it-begin-with-an": "96c677c2",
+"does-not-begin-with-a-vowel": "36d0bf7f",
+"does-not-begin-with-an": "2d3776ac",
+"does-not-end-in": "32ba47b0",
+"does-not-end-with-a": "81c952d1",
+"double-the-final": "204929d1",
+"drop-the": "7177c9e7",
+"drop-the-final": "b829bcfc",
+"end-in-4cdde2ba": "2256fe06",
+"end-in-aaf9c7ce": "04fe66ef",
+"end-with-a": "446a8572",
+"end-with-the-letter": "a8f66503",
+"ends": "0b6d6dda",
+"ends-in": "7df8297d",
+"ends-with": "b5843a67",
+"ends-with-a": "8b8c4f4f",
+"ends-with-the-letter": "91cb5a41",
+"even-though-we-have-dropped-the": "15c38eee",
+"from": "251d6b6e",
+"from-a-word-when-the-next-morphograph-b-46a3e1fe": "f4548952",
+"from-the-word": "47ea17c2",
+"how-do-we-spell": "79f5ebbd",
+"how-do-you-spell-the-morphograph": "1eba76ee",
+"if-a-form-of-the-word-ends": "3c8414b3",
+"if-a-word-ends-in": "e3908215",
+"if-a-word-ends-with-a": "e662a3fd",
+"if-we-add": "7ed8b7c7",
+"if-you-can-hear-the": "228651b5",
+"in-a-short-word-when-the-word-ends": "8b57ff79",
+"in-a-word-when-the-word-ends-with-a": "a9e26f74",
+"in-af10ef20": "dcd9fe43",
+"in-it": "d004a070",
+"is-079bc3b6": "c2ef8def",
+"is-a-short-consonant-vowel-consonant-morphograph": "f24d1533",
+"is-b47f363e": "4860ca30",
+"is-not-a-short-consonant-vowel-consonan-37dca0df": "8b67339c",
+"is-not-a-short-consonant-vowel-consonan-50799b66": "6fbfa4cf",
+"is-not-a-short-consonant-vowel-consonan-6473dfde": "1ee03a3e",
+"is-not-a-short-consonant-vowel-consonan-78cbe2b0": "8c9fdc8e",
+"is-not-a-short-consonant-vowel-consonan-9853c5dd": "243732ec",
+"is-not-a-short-consonant-vowel-consonan-c926ab9c": "9b9841a8",
+"is-not-a-short-consonant-vowel-consonan-d60e9a22": "43bab3c8",
+"is-not-a-short-consonant-vowel-consonan-ffec7849": "2aebe0e5",
+"is-one-morphograph": "fdb72c5e",
+"is-spelled-1a1d97e8": "9bac4e12",
+"is-spelled-f0a5d6a0": "675cce4e",
+"is-there-a-form-of": "424dd85f",
+"it-begins-with": "981c246b",
+"it-begins-with-a-vowel": "5531e556",
+"it-does-not-begin-with-a-vowel": "ee4266db",
+"it-does-not-begin-with-an": "b569d569",
+"it-is": "087a236b",
+"lets-go-through-each-rule-in-order-and-2c2468b4": "5a5b7d9b",
+"lets-spell-some-words-with-the-morphograph": "6d26b1d4",
+"listen": "6acdf53f",
+"now-spell": "8924a27b",
+"or-1758356d": "1769ac36",
+"plural-rule": "d10e8c1f",
+"plural-rule-if-a-word-ends-in": "6b22b8a4",
+"plural-rule-if-you-can-hear-the": "4591d6b4",
+"plural-rule-when-adding": "74b8e1e5",
+"rule-7a044c19": "4e5bed36",
+"rule-apply": "1eae1151",
+"rule-change-the": "29526463",
+"rule-d4040134": "1ab6cabc",
+"rule-drop-the-final": "62aa9720",
+"rule-use": "0deb7a09",
+"rule-when-adding": "9946d1a5",
+"so": "a0eaa78f",
+"so-do-we-double-a-letter": "c319e469",
+"so-do-we-drop-the": "7feea29f",
+"so-does-the": "d8d730a7",
+"so-does-the-doubling-rule-apply": "18b4111f",
+"so-does-the-final": "bcfcefa9",
+"so-how-do-we-spell-the-last-morphograph-in": "4dec2ee6",
+"so-no-rules-apply": "9adb1084",
+"so-we-add": "d46449ca",
+"so-we-dont-apply-the-doubling-rule-because": "855d892c",
+"so-what-letters-do-you-add-to-make-the-word": "5b875d8f",
+"so-what-morphograph-do-we-add-before-the": "ab53c230",
+"spell-2747aac6": "ffe67910",
+"spell-the-morphograph": "403fd019",
+"that-ends": "0d79f221",
+"the": "17f76128",
+"the-answer-is": "682ca597",
+"the-answer-is-a-consonant-letter": "1a61543a",
+"the-answer-is-a-vowel-letter": "3fb83c1d",
+"the-answer-is-no": "74e2d22f",
+"the-answer-is-the": "41e3695e",
+"the-answer-is-yes": "8afe98ba",
+"the-doubling-rule-double-the-final": "fdf18df8",
+"the-final": "77e4a161",
+"the-first-morphograph-in": "ac18e96b",
+"the-last-morphograph-in": "12c654c9",
+"the-morphograph-is-not": "65d3fef7",
+"the-morphographs-in": "d8365a04",
+"the-next-morphograph-in": "858108df",
+"the-next-morphograph-is": "9985670f",
+"then-the-plural-is-spelled": "c562d6e0",
+"there-is-no-form-of": "2e1c5efc",
+"this-morphograph-is-spelled": "9a0a0b49",
+"to": "b8d7e4a3",
+"to-make": "8480f7ab",
+"to-make-the-plural-word": "c5af6063",
+"use-1d4d43cc": "b8617aa4",
+"we-double-the": "058e26c3",
+"what-is-the": "9853240d",
+"what-is-the-doubling-rule": "601e9ce6",
+"what-is-the-final": "1d91ae30",
+"what-is-the-first-morphograph-in": "068e1502",
+"what-is-the-last-morphograph-in": "9dc2e1c6",
+"what-is-the-next-morphograph-in": "5618d0e2",
+"what-letter-do-we-double": "f754d036",
+"what-letter-does-it-end-in": "fe747a5a",
+"what-letters-does": "357a7040",
+"what-letters-does-it-end-in": "b65b8514",
+"what-other-rule-do-we-need-to-apply": "d5a507b9",
+"when-a-word-ends-with-the-letter": "48c40a29",
+"when-adding": "6c9b24cb",
+"when-it-is-the-only-letter-in-the-morph-ceb7ce9f": "8c22cdce",
+"when-the-word-ends-in-the-letters": "5f065804",
+"when-we-write": "1fb80bbd",
+"why-dont-we-apply-the": "def33c03",
+"why-dont-we-apply-the-doubling-rule-when-adding": "e5691ccf",
+"why-dont-we-apply-the-final": "c04e229f",
+"yes": "637fa232",
+"you-add": "c24c7943",
+"you-can-hear-the": "a392a920",
+"you-cannot-hear-the": "4f4579b4",
+"you-must-add-the-morphograph": "615a1427"
+},
+"c": {
+"ch": "edfa6d77",
+"consonant-and-y": "bd964b6b",
+"cvc": "517305fc",
+"ed": "d79f07a8",
+"er": "28357d15",
+"es": "2c4ae91d",
+"ial": "14bb9cf0",
+"ian": "5b2c7a90",
+"ic": "df8bcaaa",
+"ion": "4f1ccf1e",
+"ise": "d6e59d20",
+"or": "e2baf005",
+"ous": "2dd04d3c",
+"sh": "263d40f6",
+"ual": "c202b5c4",
+"ure": "20b81b20",
+"ves": "8eb5ec1d"
 }
-}
+},
+"morphs": [
+"able",
+"ac",
+"ad",
+"age",
+"agree",
+"al",
+"ap",
+"art",
+"at",
+"ate",
+"be",
+"ceed",
+"cept",
+"cern",
+"cess",
+"child",
+"cise",
+"clude",
+"com",
+"con",
+"copy",
+"cord",
+"crease",
+"de",
+"desire",
+"di",
+"dict",
+"diet",
+"dis",
+"duce",
+"elf",
+"en",
+"er",
+"ern",
+"est",
+"ex",
+"fess",
+"firm",
+"fix",
+"fool",
+"for",
+"fore",
+"front",
+"ful",
+"gin",
+"grace",
+"gun",
+"halve",
+"harp",
+"hilar",
+"hood",
+"ice",
+"im",
+"in",
+"ine",
+"ing",
+"inspect",
+"inter",
+"intro",
+"ish",
+"ism",
+"ist",
+"ite",
+"ive",
+"kind",
+"lead",
+"lect",
+"less",
+"link",
+"load",
+"luck",
+"ly",
+"ment",
+"mis",
+"mise",
+"mix",
+"most",
+"mote",
+"ness",
+"ob",
+"or",
+"over",
+"pare",
+"pause",
+"pay",
+"pense",
+"per",
+"pict",
+"pity",
+"plete",
+"plore",
+"pre",
+"pro",
+"pute",
+"quire",
+"rate",
+"re",
+"rect",
+"se",
+"ship",
+"short",
+"soci",
+"stant",
+"sub",
+"sume",
+"sun",
+"sup",
+"super",
+"sur",
+"thing",
+"trans",
+"trol",
+"trot",
+"trust",
+"turb",
+"un",
+"up",
+"vert",
+"vide",
+"vise",
+"ward",
+"wax",
+"wind",
+"worth"
+],
+"phrases": [
+"a-consonant-letter",
+"a-form-of",
+"a-short-consonant-vowel-consonant-morphograph",
+"a-vowel-letter",
+"and-the-next-morphograph-begins-with",
+"and-the-next-morphograph-begins-with-an-2b181396",
+"and-you-add",
+"are-5f9e5802",
+"at-the-end-is-a-vowel-letter",
+"before-adding",
+"begins-with",
+"begins-with-a-vowel",
+"begins-with-an",
+"can-you-hear-the",
+"change-the",
+"counts-as-a-vowel-at-the-end-of-a-morphograph",
+"counts-as-two-consonants",
+"do-any-rules-apply",
+"do-we-change-the",
+"do-we-drop-the-final",
+"does-0ae736c9",
+"does-it-begin-with-a-vowel",
+"does-it-begin-with-a-vowel-letter-or-a-fdb65534",
+"does-it-begin-with-an",
+"does-not-begin-with-a-vowel",
+"does-not-begin-with-an",
+"does-not-end-in",
+"does-not-end-with-a",
+"double-the-final",
+"drop-the",
+"drop-the-final",
+"end-in-4cdde2ba",
+"end-in-aaf9c7ce",
+"end-with-a",
+"end-with-the-letter",
+"ends",
+"ends-in",
+"ends-with",
+"ends-with-a",
+"ends-with-the-letter",
+"even-though-we-have-dropped-the",
+"from",
+"from-a-word-when-the-next-morphograph-b-46a3e1fe",
+"from-the-word",
+"how-do-we-spell",
+"how-do-you-spell-the-morphograph",
+"if-a-form-of-the-word-ends",
+"if-a-word-ends-in",
+"if-a-word-ends-with-a",
+"if-we-add",
+"if-you-can-hear-the",
+"in-a-short-word-when-the-word-ends",
+"in-a-word-when-the-word-ends-with-a",
+"in-af10ef20",
+"in-it",
+"is-079bc3b6",
+"is-a-short-consonant-vowel-consonant-morphograph",
+"is-b47f363e",
+"is-not-a-short-consonant-vowel-consonan-37dca0df",
+"is-not-a-short-consonant-vowel-consonan-50799b66",
+"is-not-a-short-consonant-vowel-consonan-6473dfde",
+"is-not-a-short-consonant-vowel-consonan-78cbe2b0",
+"is-not-a-short-consonant-vowel-consonan-9853c5dd",
+"is-not-a-short-consonant-vowel-consonan-c926ab9c",
+"is-not-a-short-consonant-vowel-consonan-d60e9a22",
+"is-not-a-short-consonant-vowel-consonan-ffec7849",
+"is-one-morphograph",
+"is-spelled-1a1d97e8",
+"is-spelled-f0a5d6a0",
+"is-there-a-form-of",
+"it-begins-with",
+"it-begins-with-a-vowel",
+"it-does-not-begin-with-a-vowel",
+"it-does-not-begin-with-an",
+"it-is",
+"lets-go-through-each-rule-in-order-and-2c2468b4",
+"lets-spell-some-words-with-the-morphograph",
+"listen",
+"now-spell",
+"or-1758356d",
+"plural-rule",
+"plural-rule-if-a-word-ends-in",
+"plural-rule-if-you-can-hear-the",
+"plural-rule-when-adding",
+"rule-7a044c19",
+"rule-apply",
+"rule-change-the",
+"rule-d4040134",
+"rule-drop-the-final",
+"rule-use",
+"rule-when-adding",
+"so",
+"so-do-we-double-a-letter",
+"so-do-we-drop-the",
+"so-does-the",
+"so-does-the-doubling-rule-apply",
+"so-does-the-final",
+"so-how-do-we-spell-the-last-morphograph-in",
+"so-no-rules-apply",
+"so-we-add",
+"so-we-dont-apply-the-doubling-rule-because",
+"so-what-letters-do-you-add-to-make-the-word",
+"so-what-morphograph-do-we-add-before-the",
+"spell-2747aac6",
+"spell-the-morphograph",
+"that-ends",
+"the",
+"the-answer-is",
+"the-answer-is-a-consonant-letter",
+"the-answer-is-a-vowel-letter",
+"the-answer-is-no",
+"the-answer-is-the",
+"the-answer-is-yes",
+"the-doubling-rule-double-the-final",
+"the-final",
+"the-first-morphograph-in",
+"the-last-morphograph-in",
+"the-morphograph-is-not",
+"the-morphographs-in",
+"the-next-morphograph-in",
+"the-next-morphograph-is",
+"then-the-plural-is-spelled",
+"there-is-no-form-of",
+"this-morphograph-is-spelled",
+"to",
+"to-make",
+"to-make-the-plural-word",
+"use-1d4d43cc",
+"we-double-the",
+"what-is-the",
+"what-is-the-doubling-rule",
+"what-is-the-final",
+"what-is-the-first-morphograph-in",
+"what-is-the-last-morphograph-in",
+"what-is-the-next-morphograph-in",
+"what-letter-do-we-double",
+"what-letter-does-it-end-in",
+"what-letters-does",
+"what-letters-does-it-end-in",
+"what-other-rule-do-we-need-to-apply",
+"when-a-word-ends-with-the-letter",
+"when-adding",
+"when-it-is-the-only-letter-in-the-morph-ceb7ce9f",
+"when-the-word-ends-in-the-letters",
+"when-we-write",
+"why-dont-we-apply-the",
+"why-dont-we-apply-the-doubling-rule-when-adding",
+"why-dont-we-apply-the-final",
+"yes",
+"you-add",
+"you-can-hear-the",
+"you-cannot-hear-the",
+"you-must-add-the-morphograph"
+],
+"combinations": [
+"ch",
+"consonant-and-y",
+"cvc",
+"ed",
+"er",
+"es",
+"ial",
+"ian",
+"ic",
+"ion",
+"ise",
+"or",
+"ous",
+"sh",
+"ual",
+"ure",
+"ves"
+]
 };
 </script>
 <script>
@@ -20983,6 +21972,25 @@ const AUDIO_MANIFEST = {
 //    once per page, on the same element every clip uses, and never notes it
 //    as the "Last voice". Android Chrome counts any tap on the page and needs
 //    none of this; elsewhere it costs nothing.
+//  * 3.0.22 (2026-10-20, build loop run 20261020-b2; Tim, 2026-10-13: "Why
+//    isn't it all in my cloned voice?"): every spoken line is said from his
+//    pieces when it can be. tile(line) matches the line against the templates
+//    of PIECES_DATA (src/pieces-data.js, generated by tools/prompt_pieces.mjs
+//    from the inventory), most literal characters first; the first template
+//    whose fills all resolve wins. Its fixed text is phrase pieces
+//    (audio/q/<id>.mp3, by text); a letter run ({letters}) is one of his 17
+//    letter-combination recordings (audio/c) when its letters joined are one
+//    of them (consonant-and-y included), else his letter clips (audio/l); a
+//    word or morphograph ({word} {base} {stem} {morph}) is kindOf's piece,
+//    tools/prompt_pieces.mjs's rule: one letter -> l, spelled out -> c, a base
+//    of 3+ letters with a word clip -> w, else his name clip (audio/m). So or
+//    in a {morph} slot is m/or and "o, r" in a {letters} slot is c/or. Any
+//    piece not in the manifest (morphs / phrases / combinations, written by
+//    tools/install_pieces.py, and words / letters) -> null, and the WHOLE line
+//    goes to the device voice: one line never mixes voices. sayLine plays the
+//    pieces through the one element with gapAfter's pauses: LETTER_GAP_MS
+//    between two letters, SENTENCE_GAP_MS after a piece that ends a sentence
+//    when more follows, PIECE_GAP_MS otherwise (three numbers to tune by ear).
 const Voice = (() => {
   const CACHE = 'spelling-audio-v1';
   const manifest = (typeof AUDIO_MANIFEST !== 'undefined' && AUDIO_MANIFEST) ||
@@ -20995,6 +22003,11 @@ const Voice = (() => {
   // 3.0.5 a name with no clip was not said at all; since 3.0.5 the device
   // voice says it, from the step's spoken line in app.js.)
   const morphs = new Set(manifest.morphs || []);
+  // 3.0.22 (B2): his phrase pieces (audio/q/<id>.mp3) and his 17 letter-combination
+  // recordings (audio/c/<item>.mp3), listed by tools/install_pieces.py under the manifest
+  // keys `phrases` and `combinations` (only the ones he approved are ever installed).
+  const phrases = new Set(manifest.phrases || []);
+  const combinations = new Set(manifest.combinations || []);
   // Pause after every letter name when spelling, the last letter included.
   // Speed preset C on voice/Spelling Speed.html. Tim, 2026-09-15, verbatim:
   // "C (but it miss pronounces varying - it sounds like va-rying". C is this
@@ -21003,6 +22016,13 @@ const Voice = (() => {
   // The device-voice fallback (app.js ttsSpelled) has no gap and is unchanged.
   const LETTER_GAP_MS = 60;
   const SOUND_GAP_MS = 480;       // breath between sounds when segmenting a word
+  // 3.0.22 (B2): the pauses between stitched pieces (gapAfter). Between two of his
+  // letters it is LETTER_GAP_MS, as when spelling; after a piece that ends a sentence
+  // (. ? or !) with more to come, a sentence's breath; between any other two pieces a
+  // short join, so "Spell" + "prediction" reads as one sentence, not two words. Starting
+  // values, to be set by Tim's ear on his phone.
+  const PIECE_GAP_MS = 90;
+  const SENTENCE_GAP_MS = 300;
   let el = null;
   let run = 0;                    // bumps to cancel an in-flight sequence
 
@@ -21022,10 +22042,16 @@ const Voice = (() => {
   function lastVoice() { return last; }
 
   // 3.0.1: { w: { water: 'ab12cd34', ... }, l: {...}, p: {...} } - the key is
-  // the file name without .mp3 (for p the slug, th_v for TH).
+  // the file name without .mp3 (for p the slug, th_v for TH); since 3.0.22 the
+  // clip's id, which is its file name for every clip but con (con_.mp3, below).
   const hashes = (manifest.hashes && typeof manifest.hashes === 'object') ? manifest.hashes : {};
   function url(kind, key) {
-    const plain = 'audio/' + kind + '/' + encodeURIComponent(key) + '.mp3';
+    // 3.0.22 (2026-10-20, run 20261020-b2install): a clip whose id is a Windows device name - his
+    // morphograph con - is stored as <id>_.mp3 (con_.mp3), because Git for Windows and OneDrive refuse
+    // the bare name. The rule is tools/clip_names.py safe_stem, mirrored here: it changes the file name
+    // only; the manifest, its hashes and every caller still use the id (con).
+    const safe = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(key) ? key + '_' : key;
+    const plain = 'audio/' + kind + '/' + encodeURIComponent(safe) + '.mp3';
     const table = hashes[kind];
     const h = table && Object.prototype.hasOwnProperty.call(table, key) ? table[key] : null;
     return h ? plain + '?h=' + encodeURIComponent(h) : plain;
@@ -21210,6 +22236,201 @@ const Voice = (() => {
     return true;
   }
 
+  // ---------- 3.0.22 (B2): a whole line from Tim's pieces ----------
+  // The templates (PIECES_DATA) compiled once, on first use, each to a regex whose slots
+  // are capture groups: a {letters} / {letter} slot matches a run of single letters joined
+  // by ", " (or consonant-and-y); any other slot one word. No lookbehind and no regex
+  // flags newer than ES2015, so an older iPhone parses the page.
+  const CANDY = 'consonant-and-y';
+  const LETTER_SLOT = /^letters?$/i;
+  const isWordChar = c => !!c && /[A-Za-z']/.test(c);
+  const lowerFirst = s => (s ? s.charAt(0).toLowerCase() + s.slice(1) : s);
+  const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  let compiled = null;
+  function piecesData() { return (typeof PIECES_DATA !== 'undefined' && PIECES_DATA) || null; }
+  function morphTypes() {
+    return (typeof MORPH_DATA !== 'undefined' && MORPH_DATA && MORPH_DATA.types) || {};
+  }
+  function slotPattern(name) {
+    const capital = name.charAt(0) !== name.charAt(0).toLowerCase();
+    if (LETTER_SLOT.test(name)) {
+      return capital ? '([A-Za-z](?:, [a-z])*|[Cc]onsonant-and-y)' : '([a-z](?:, [a-z])*|consonant-and-y)';
+    }
+    return capital ? "([A-Za-z][a-z']*)" : "([a-z][a-z']*)";
+  }
+  // tools/prompt_pieces.mjs piecesOf, for one stretch of fixed text: split after . ? or !
+  // followed by a space, each part trimmed and a leading , ; : or ( dropped; a part with no
+  // letter or digit is punctuation only ({ punct }), which is not said: its . ? or ! is
+  // carried onto the piece before it, so gapAfter still sees the sentence end.
+  function textPieces(seg) {
+    const parts = [];
+    let cur = '';
+    for (let i = 0; i < seg.length; i++) {
+      cur += seg[i];
+      if ('.?!'.indexOf(seg[i]) !== -1 && /\s/.test(seg[i + 1] || '')) {
+        parts.push(cur);
+        cur = '';
+        while (/\s/.test(seg[i + 1] || '')) i++;
+      }
+    }
+    parts.push(cur);
+    const out = [];
+    for (let p of parts) {
+      p = p.trim().replace(/^[,;:(]\s*/, '').trim();
+      if (!p) continue;
+      out.push(/[A-Za-z0-9]/.test(p) ? { phrase: p } : { punct: p });
+    }
+    return out;
+  }
+  function templates() {
+    if (compiled) return compiled;
+    compiled = [];
+    const data = piecesData();
+    if (!data || !Array.isArray(data.templates)) return compiled;
+    data.templates.forEach(T => {
+      const bits = String(T.t).split(/\{([A-Za-z]+)\}/);
+      const lits = bits.filter((_, i) => i % 2 === 0);
+      const slots = bits.filter((_, i) => i % 2 === 1);
+      let src = '^';
+      lits.forEach((lit, i) => { src += escRe(lit); if (i < slots.length) src += slotPattern(slots[i]); });
+      compiled.push({ re: new RegExp(src + '$'), lits, slots, segs: lits.map(textPieces) });
+    });
+    return compiled;
+  }
+  // tools/prompt_pieces.mjs letterRuns: the letter-name runs of a line, [{ at, text }] -
+  // consonant-and-y, and every run of single letters joined by ", " (a lone a, A or I
+  // before a word is the article or the pronoun; a run's last ", a" before a word is the
+  // article). A run of two or more letters must be exactly one {letters} fill.
+  function letterRuns(line) {
+    const out = [];
+    const candy = /\bconsonant-and-y\b/g;
+    let m;
+    while ((m = candy.exec(line))) out.push({ at: m.index, text: m[0] });
+    const masked = line.replace(/\bconsonant-and-y\b/g, x => new Array(x.length + 1).join('#'));
+    const wordAfter = (i, t) => /^ [A-Za-z]/.test(line.slice(i + t.length));
+    for (let i = 0; i < masked.length; i++) {
+      if (!/[A-Za-z]/.test(masked[i]) || isWordChar(masked[i - 1])) continue;
+      const ends = [i + 1];
+      let end = i + 1;
+      while (masked.slice(end, end + 2) === ', ' && /[a-z]/.test(masked[end + 2] || '')) { end += 3; ends.push(end); }
+      let e = -1;
+      for (let j = ends.length - 1; j >= 0; j--) if (!isWordChar(masked[ends[j]])) { e = ends[j]; break; }
+      if (e === -1) continue;
+      let text = masked.slice(i, e);
+      if (text.length > 1 && text.slice(-3) === ', a' && wordAfter(i, text)) text = text.slice(0, -3);
+      if ((text === 'a' || text === 'A' || text === 'I') && wordAfter(i, text)) { i = e - 1; continue; }
+      out.push({ at: i, text });
+      i = e - 1;
+    }
+    return out;
+  }
+  // tools/prompt_pieces.mjs kindOf (685-695), with the manifest's words for "has a word clip".
+  function kindOf(m) {
+    if (m.length === 1) return 'l';
+    const data = piecesData();
+    const spell = (data && data.spellOut) || [];
+    if (spell.map(s => String(s).toLowerCase()).indexOf(m) !== -1) return 'c';
+    const types = morphTypes();
+    const t = Object.prototype.hasOwnProperty.call(types, m) ? types[m] : undefined;
+    if (words.has(m) && (t === undefined || t === 'base') && m.length >= 3) return 'w';
+    return 'm';
+  }
+  // tools/prompt_pieces.mjs runPieces: a {letters} fill as pieces, or null.
+  function runPieces(fill) {
+    if (fill === CANDY) return [['c', CANDY, fill]];
+    const toks = String(fill).split(', ');
+    if (toks.some(t => !/^[a-z]$/.test(t))) return null;
+    const data = piecesData();
+    const items = (data && data.combinations) || [];
+    const joined = toks.join('');
+    if (toks.length > 1 && items.indexOf(joined) !== -1) return [['c', joined, fill]];
+    return toks.map(t => ['l', t, t]);
+  }
+  function piece(kind, id, text) { return { kind, id, url: url(kind, id), text }; }
+  function fillPieces(slot, fill) {
+    const v = lowerFirst(fill);
+    if (LETTER_SLOT.test(slot)) {
+      const r = runPieces(v);
+      return r ? r.map(x => piece(x[0], x[1], x[2])) : null;
+    }
+    return [piece(kindOf(v), v, fill)];
+  }
+  function available(p) {
+    if (p.kind === 'q') return phrases.has(p.id);
+    if (p.kind === 'c') return combinations.has(p.id);
+    if (p.kind === 'm') return morphs.has(p.id);
+    if (p.kind === 'w') return words.has(p.id);
+    if (p.kind === 'l') return letters.has(p.id);
+    return false;
+  }
+  // The pieces a line tiles into, whether or not each is installed: the first template
+  // (in PIECES_DATA's order) that matches the whole line, puts each run of two or more
+  // letters in one {letters} fill, and whose fills all resolve. null when none does.
+  function match(line) {
+    const L = String(line == null ? '' : line);
+    if (!L) return null;
+    const data = piecesData();
+    const ph = (data && data.phrases) || {};
+    let runs = null;
+    for (const T of templates()) {
+      const m = T.re.exec(L);
+      if (!m) continue;
+      const fills = m.slice(1);
+      const starts = [];
+      let at = 0;
+      fills.forEach((f, i) => { at += T.lits[i].length; starts.push(at); at += f.length; });
+      runs = runs || letterRuns(L);
+      const covered = runs.every(r => r.text.indexOf(', ') === -1 ||
+        fills.some((f, i) => LETTER_SLOT.test(T.slots[i]) && starts[i] === r.at && f === r.text));
+      if (!covered) continue;
+      const seq = [];
+      let ok = true;
+      for (let i = 0; i < T.segs.length && ok; i++) {
+        for (const x of T.segs[i]) {
+          if (x.punct) { if (seq.length && /[.?!]/.test(x.punct)) seq[seq.length - 1].text += x.punct; continue; }
+          if (!Object.prototype.hasOwnProperty.call(ph, x.phrase)) { ok = false; break; }
+          seq.push(piece('q', ph[x.phrase], x.phrase));
+        }
+        if (ok && i < fills.length) {
+          const ps = fillPieces(T.slots[i], fills[i]);
+          if (!ps) ok = false; else ps.forEach(p => seq.push(p));
+        }
+      }
+      if (ok && seq.length) return seq;
+    }
+    return null;
+  }
+  // [{ kind, id, url, text }] when EVERY piece of the line is installed, else null (the
+  // whole line goes to the device voice).
+  function tile(line) {
+    const seq = match(line);
+    return seq && seq.every(available) ? seq : null;
+  }
+  function gapAfter(p, next) {
+    if (p && next && p.kind === 'l' && next.kind === 'l') return LETTER_GAP_MS;
+    if (p && next && /[.?!]$/.test(String(p.text || ''))) return SENTENCE_GAP_MS;
+    return PIECE_GAP_MS;
+  }
+  // Say a whole line from his pieces, through the one element, with gapAfter's pauses.
+  // Returns true when his pieces took it; false (fallback() at once) when tile() is null.
+  // A clip that fails mid-line hands the whole line to fallback; onDone runs once, after
+  // the last piece - never after the fallback, never when a newer call took over (say()).
+  function sayLine(line, fallback, onDone) {
+    const seq = tile(line);
+    if (!seq) { if (fallback) fallback(); return false; }
+    const my = ++run;
+    try { if (el) el.pause(); } catch (e) { /* nothing playing */ }
+    (async () => {
+      for (let i = 0; i < seq.length; i++) {
+        if (my !== run) return;                       // superseded by a newer call
+        try { await playOne(seq[i].url, gapAfter(seq[i], seq[i + 1])); }
+        catch (e) { if (my === run && fallback) fallback(); return; }
+      }
+      if (my === run && typeof onDone === 'function') onDone();
+    })();
+    return true;
+  }
+
   function cancel() {
     run++;
     try { if (el) { el.pause(); el.currentTime = 0; } } catch (e) { /* fine */ }
@@ -21229,7 +22450,9 @@ const Voice = (() => {
     });
     letters.forEach(ch => urls.push(url('l', ch)));
     sounds.forEach(c => urls.push(url('p', soundSlug(c))));   // 44 phoneme clips
-    morphs.forEach(m => urls.push(url('m', m)));              // morphograph names, once recorded
+    morphs.forEach(m => urls.push(url('m', m)));              // morphograph names (3.0.22: installed)
+    phrases.forEach(q => urls.push(url('q', q)));             // 3.0.22: his phrase pieces
+    combinations.forEach(c => urls.push(url('c', c)));        // 3.0.22: his 17 letter combinations
     window.caches.open(CACHE).then(async c => {
       for (const u of urls) {
         if (await c.match(u)) continue;
@@ -21243,11 +22466,15 @@ const Voice = (() => {
     hasWord, hasMorph, canSpell, hasSound, hasAllSounds,
     lastVoice, notePhoneVoice,                     // 3.0.4: the problem report
     unlock, primed, SILENT_WAV,                    // 3.0.12: the Start tap primes the element
+    sayLine, tile, match, gapAfter,                // 3.0.22 (B2): a whole line from Tim's pieces
+    LETTER_GAP_MS, PIECE_GAP_MS, SENTENCE_GAP_MS,  // 3.0.22: the three pauses gapAfter uses
     available: words.size > 0,
     wordCount: words.size,
     letterCount: letters.size,
     soundCount: sounds.size,
     morphCount: morphs.size,
+    phraseCount: phrases.size,                     // 3.0.22
+    combinationCount: combinations.size,           // 3.0.22
     cacheName: CACHE
   };
 })();
@@ -21508,8 +22735,26 @@ const App = (() => {
   // LEAD_WAIT_MS, because the word that follows stops the phone voice
   // (speak), and a short lead's own 250 + 60 ms per character can run out
   // while a phone is still starting to say it.
+  // 3.0.22 (2026-10-20, build loop run 20261020-b2, B2; Tim, 2026-10-13: "Why isn't
+  // it all in my cloned voice?"): the line is said from Tim's own pieces FIRST -
+  // Voice.sayLine stitches the whole line from his phrase clips, word clips,
+  // morphograph names, letters and 17 letter combinations (src/audio.js tile). Only
+  // when a piece of it is not installed (one he has not approved yet), or a clip
+  // fails, does the device voice say the WHOLE line, exactly as up to 3.0.21
+  // (deviceScript below) - never half his voice, half the phone's. `then` runs once
+  // either way: after his last piece, or when the phone voice has finished (or its
+  // timer, as before).
   function speakScript(text, then, minMs) {
     const my = newTurn();
+    const device = () => { if (my === speechTurn) deviceScript(String(text), then, minMs, my); };
+    try { speechSynthesis.cancel(); } catch (e) { /* no speech here */ }
+    try {
+      Voice.sayLine(String(text), device, then ? () => { if (my === speechTurn) then(); } : null);
+    } catch (e) { device(); }
+  }
+
+  // The device voice says the whole line: speakScript up to 3.0.21, unchanged.
+  function deviceScript(text, then, minMs, my) {
     let done = false, timer = null;
     const finish = () => {
       if (done) return;
@@ -21545,6 +22790,11 @@ const App = (() => {
   // "is spelled" by the device voice), else the device voice says the word
   // and "is spelled" together. The letters are Tim's letter clips. The word is
   // not said again at the end.
+  // 3.0.22 (B2, run 20261020-b2; Tim: "Why isn't it all in my cloned voice?"): the
+  // "<name> is spelled" goes through speakScript, so it is his pieces first ("pre is
+  // spelled" = his name clip m/pre + his "is spelled", "This morphograph is spelled" one
+  // phrase); the letters follow as before. A word's "<word> is spelled" is tiled whole
+  // (his word clip + "is spelled"); when a piece of it is missing, 3.0.5's way below.
   function teachAloud(s) {
     const letters = s.letters || s.morph || s.word || '';
     if (s.morph) {
@@ -21555,9 +22805,15 @@ const App = (() => {
     const W = s.word;
     const my = newTurn();
     try { speechSynthesis.cancel(); } catch (e) { /* no speech */ }
-    Voice.say('word', W,
-      () => { if (my === speechTurn) speakScript(W + ' is spelled', () => lettersAloud(letters)); },
-      () => { if (my === speechTurn) speakScript('is spelled', () => lettersAloud(letters)); });
+    const before = () => {                    // up to 3.0.21: his clip of the word, then "is spelled"
+      if (my !== speechTurn) return;
+      Voice.say('word', W,
+        () => { if (my === speechTurn) speakScript(W + ' is spelled', () => lettersAloud(letters)); },
+        () => { if (my === speechTurn) speakScript('is spelled', () => lettersAloud(letters)); });
+    };
+    try {
+      Voice.sayLine(W + ' is spelled', before, () => { if (my === speechTurn) lettersAloud(letters); });
+    } catch (e) { before(); }
   }
 
   const letterNames = str => str.split('')
@@ -22037,10 +23293,21 @@ const App = (() => {
   // instruction. Hear it again runs this again: the same sequence.
   // When the phone never says it has finished the lead (its speech is off),
   // the word follows after LEAD_WAIT_MS at the latest.
+  // 3.0.22 (B2, run 20261020-b2; Tim: "Why isn't it all in my cloned voice?"): the
+  // whole hidden line is said from his pieces first ("Spell prediction." = his "Spell"
+  // + his clip of prediction, "How do we spell" + the word, ...: Voice.sayLine); only
+  // when a piece of it is missing (or a clip fails) the way above, as in 3.0.21
+  // (hiddenWordBefore).
   const LEAD_WAIT_MS = 2000;
   function hiddenWordAloud(s) {
     const line = hiddenWordLine(s);
     const W = String(s.word);
+    const my = newTurn();
+    try { speechSynthesis.cancel(); } catch (e) { /* no speech here */ }
+    const before = () => { if (my === speechTurn) hiddenWordBefore(line, W); };
+    try { Voice.sayLine(line, before, null); } catch (e) { before(); }
+  }
+  function hiddenWordBefore(line, W) {
     const at = line.toLowerCase().lastIndexOf(W.toLowerCase());
     const lead = at > 0 ? line.slice(0, at).trim() : '';
     if (!Voice.hasWord(W) || at === -1) { speakScript(line); return; }
@@ -22057,6 +23324,10 @@ const App = (() => {
   //   a step with a spoken line                  the device voice says it
   //   a step that says its word                  Tim's clip of the word (the
   //                                              phone's voice when there is none)
+  // 3.0.22 (B2): every line above that goes through speakScript, teachAloud or
+  // hiddenWordAloud is said from Tim's own pieces first (Voice.sayLine), the device
+  // voice taking the whole line only when one of its pieces is not installed. Hear it
+  // again runs the same function, so it replays the same pieces.
   function stepAudio(s) {
     if (!s) return null;
     if (s.kind === 'teach' && (s.morph || s.spoken)) return () => teachAloud(s);

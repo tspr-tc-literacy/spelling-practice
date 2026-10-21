@@ -10573,7 +10573,7 @@ const CONFIG = {
   APP_NAME: 'Spelling Practice',
   // tools/publish_release.py refuses a release unless this, the built page and
   // sw.js's cache name ('spelling-app-v' + VERSION) all agree.
-  VERSION: '3.0.22',
+  VERSION: '3.0.23',
   // v3: the child types every answer and the app marks it (trim + lowercase).
   // false (3.0.5, 2026-10-13): the hint under each word is "Type it." and the
   // home screen says paper and a pen are only needed for the spelling test at
@@ -10613,17 +10613,61 @@ const CONFIG = {
   // wrong final tests ("Spell W.") before the app stops re-analysing, runs the
   // listen-and-spell procedure once and moves on;
   CORRECTION_MAX_LOOPS: 3,
-  // v3 slice 2: in-lesson spacing (lesson.js), replacing slice 1's
-  // across-days Stage-1 count (Tim's spec puts the checks inside the lesson).
-  // After a correction, or a new word's first test, the word is checked
-  // again after INLESSON_GAPS[0] more words, then after INLESSON_GAPS[1] more,
-  // then on the end-of-session paper test (Tim: "check the word again after
-  // the next word ... Then check again two words later. Then test again at
-  // the end of the session").
-  INLESSON_GAPS: [1, 2],
-  // a wrong check is corrected and the spacing restarts; after this many
-  // restarts the word goes straight to the paper test.
-  INLESSON_MAX_RESTARTS: 3,
+  // 3.0.23 (2026-10-21, build loop run 20261021-sessions): the session system.
+  // Every number of it is here, one per line, so Tim can ask for any of them to
+  // change. This block replaces four older settings (3.0.22's two check gaps
+  // and its restart count, the fixed cap on new words, and the light-night size,
+  // which is FILLER_TARGET now); SESSION_MAX keeps its name as the most words a
+  // session can grow to. Tim, verbatim: "We need to limit the amount of words
+  // that are taught. (I think this limit should be adapative. ... I think we
+  // need a hard limit of 20 minutes at which stage it cuts to the paper test and
+  // only tests the words that they have been working on." (Sched.sessionPlan
+  // reads the sizes; lesson.js the rest; DESIGN.md Decisions 304 on.)
+  // How many words a session holds: the first session SESSION_START; after each
+  // session the next grows or shrinks by SESSION_STEP, never below SESSION_MIN
+  // and never above SESSION_MAX.
+  SESSION_START: 12,
+  SESSION_STEP: 2,
+  SESSION_MIN: 6,
+  SESSION_MAX: 20,
+  // How many of them may be new words: after a session that went well, one
+  // that held steady, and one that went badly.
+  NEW_WORDS_MAX: 4,
+  NEW_WORDS_STEADY: 3,
+  NEW_WORDS_MIN: 2,
+  // Grow when at least this share of the words were right the first time ...
+  GROW_RIGHT_RATE: 0.80,
+  // ... with no more than this many corrections (and the session finished
+  // inside the time).
+  GROW_MAX_CORRECTIONS: 2,
+  // Shrink when fewer than this share were right the first time ...
+  SHRINK_RIGHT_RATE: 0.60,
+  // ... or there were at least this many corrections (or the time limit cut
+  // in, or the session was left unfinished). Otherwise: the same size again.
+  SHRINK_MIN_CORRECTIONS: 5,
+  // A word being practised comes back after at least this many other words, or
+  // after FIRST_COMEBACK_SHARE of the session's words when that is more (10% of
+  // 20 words is 2, so the share only counts above 20). Tim: "maybe it needs to
+  // be based on the amount of words".
+  FIRST_COMEBACK_MIN: 2,
+  FIRST_COMEBACK_SHARE: 0.10,
+  // Never the same word twice in a row: at least this many other words between
+  // two turns of the same word, everywhere in the session.
+  SAME_WORD_GAP: 2,
+  // A word wrong when it comes back is fixed and comes back once more, at most
+  // this many times; after that it goes straight to the paper test.
+  COMEBACK_RESTARTS_MAX: 2,
+  // Minutes from the start: after this no new word starts ...
+  NO_NEW_WORDS_AFTER_MIN: 15,
+  // ... and at this the paper test begins, with every word reached (the word on
+  // screen, and its correction, finish first).
+  PAPER_TEST_AFTER_MIN: 20,
+  // A session left unfinished and untouched this many minutes (or from another
+  // day) goes on record as left, the next time the app opens.
+  SESSION_LEFT_AFTER_MIN: 30,
+  // A light night (few words due) is topped up with low-priority gap-fillers to
+  // this many words, or to the session's size when that is smaller.
+  FILLER_TARGET: 10,
   // 3.0.21 (2026-10-20): the two settings for the paper test's page photo
   // (its size on the phone and the 14 days it was kept) went with the photo
   // step (Tim, 2026-10-19: "What is the point of the photo then? Remove all
@@ -10638,25 +10682,10 @@ const CONFIG = {
   SCAN_SIDES: [900, 1400, 2000, 2800],
   TEACHER_NAME: 'Mr Sproule',
   TEACHER_EMAIL: 'tspr@tc.vic.edu.au',
-  // SESSION_MAX caps the whole nightly session (added 2026-08-11). The old
-  // 10-word cap was an artefact of the printed 10-box template; with no
-  // template a session shows however many reviews are genuinely DUE, up to
-  // this generous ceiling — a safety valve so a student returning after a
-  // break isn't hit with 50 at once. Rarely binds in steady state. Tunable.
-  SESSION_MAX: 30,
-  // DAILY_MAX is now only the light-night FILLER target: when few reviews are
-  // due, low-priority gap-fillers top the session up to this comfortable size.
-  // It no longer caps the session (SESSION_MAX does).
-  DAILY_MAX: 10,
   // (v3: PAGE_SIZE is gone - each word is typed, marked and corrected on the
   // spot, so there are no dictate-then-check rounds.)
-  // How many NEW words to introduce per session (2026-07-23). The session
-  // LEADS with new words (this week's fresh errors are the priority), then
-  // fills with due reviews, then tops up with low-priority gap-fillers.
-  // Capping intake keeps a night's NEW load manageable while a backlog
-  // drains over a few sessions; in steady state a book check adds only a
-  // handful, so it rarely binds. The whole session is capped at SESSION_MAX.
-  INTAKE_MAX: 4,
+  // (3.0.23: the session's size, its new-word cap and the filler target are in
+  // the session block above.)
   // Intensive ladder for intervention students (2026-07-23, Tim's call):
   // two exposures at each spacing, widening only on success - 1,1 (two
   // nights), then every-2nd-day x2, every-3rd x2, ... up to weekly, then
@@ -11540,7 +11569,7 @@ const RENAMED_WORDS = {"bodyless": "bodiless", "familyless": "famililess", "flye
 //   * no network, no storage, no address bar: this file uses none of them.
 //
 // Testable in Node: Scan.use({ createImageBitmap, makeCanvas }) swaps in
-// stand-ins (as Pages.use does); readPixels() works on plain RGBA bytes.
+// stand-ins (as src/pages.js's Pages.use did until 3.0.21); readPixels() works on plain RGBA bytes.
 const Scan = (() => {
   // Test stand-ins. undefined = use the browser's own.
   let injectedBitmap = undefined;
@@ -11867,7 +11896,8 @@ const Sched = (() => {
   // Classify the deck. low = demoted to gap-filler (teacher dropped it from
   // the struggling list); drill = active + in the daily band; spaced =
   // active, still on the ladder but past daily; maint = graduated to FSRS;
-  // waiting = active but not yet started (throttled out by the intake cap).
+  // waiting = active but not yet started (no place yet under the session's
+  // new-word cap, Sched.sessionPlan).
   function deckState(items, cfg) {
     const rungs = dailyRungs(cfg);
     const out = { drill: 0, spaced: 0, maint: 0, waiting: 0, low: 0 };
@@ -11882,32 +11912,76 @@ const Sched = (() => {
     return out;
   }
 
-  // Choose today's targets.
-  //
-  // Two guards, both needed once a target spends a whole week in daily
-  // drill: (1) INTAKE_MAX throttles how many targets may sit in the daily
-  // band at once, so the deck can't demand more per night than a student
-  // can actually do; (2) room is RESERVED for that new intake, so a freshly
-  // flagged word is never crowded out by an overdue backlog — without this,
-  // once DAILY_MAX items are overdue, new words never start at all.
-  function pickSession(items, order, today, cfg) {
-    const active = it => it.pri !== 'low';       // low-priority don't compete
-    // SESSION_MAX caps the whole session (every review that's due, up to a
-    // generous ceiling); DAILY_MAX is only the light-night filler target.
-    // Fall back to DAILY_MAX when SESSION_MAX is unset (older configs).
-    const sessionMax = cfg.SESSION_MAX == null ? cfg.DAILY_MAX : cfg.SESSION_MAX;
-    const cap = cfg.INTAKE_MAX == null ? sessionMax : cfg.INTAKE_MAX;
+  // ---- 3.0.23: the session's size, from the last session (adaptive) ----
+  // Tim (2026-10-21), verbatim: "I think this limit should be adapative. If they
+  // are getting them all right and not having to do the correction protocols
+  // then we have more words. If they are getting them wrong and struggling to
+  // get the word right, we reduce the amount of words that they will be given."
+  // Read from the device's own records (db.sessions); no server. The LAST
+  // record decides, by its first tries right (good / (good + again), unknown
+  // when both are 0), its corrections (corr), whether a time mark cut it
+  // (limit) and whether it was left unfinished (ended 'left'):
+  //   no record                      SESSION_START words, NEW_WORDS_MAX new, 'start'
+  //   up    right >= GROW_RIGHT_RATE, corrections <= GROW_MAX_CORRECTIONS, no
+  //         time mark, not left      + SESSION_STEP (20 at most), NEW_WORDS_MAX
+  //                                  new, 'up'
+  //   down  right < SHRINK_RIGHT_RATE ('down-rate'), or corrections >=
+  //         SHRINK_MIN_CORRECTIONS ('down-corrections'), or a time mark cut it
+  //         ('down-limit'), or it was left ('down-left') - the first that holds
+  //         names it               - SESSION_STEP (SESSION_MIN at least),
+  //                                  NEW_WORDS_MIN new
+  //   else                           the same size, NEW_WORDS_STEADY new, 'same'
+  // The size counted from is the last record's own size (a record from before
+  // 3.0.23 has none: SESSION_START), kept between the smallest and the largest
+  // size CONFIG allows (6 and 20). Returns { size, newCap, why }.
+  function sessionPlan(sessions, cfg) {
+    cfg = cfg || (typeof CONFIG !== 'undefined' ? CONFIG : {});
+    const n = (v, d) => (typeof v === 'number' && isFinite(v) ? v : d);
+    const START = n(cfg.SESSION_START, 12), STEP = n(cfg.SESSION_STEP, 2);
+    const MIN = n(cfg.SESSION_MIN, 6), MAX = n(cfg.SESSION_MAX, 20);
+    const clamp = v => Math.min(MAX, Math.max(MIN, v));
+    const last = sessions && sessions.length ? sessions[sessions.length - 1] : null;
+    if (!last) return { size: clamp(START), newCap: n(cfg.NEW_WORDS_MAX, 4), why: 'start' };
+    const prev = clamp(typeof last.size === 'number' && isFinite(last.size) ? last.size : START);
+    const good = last.good || 0, again = last.again || 0;
+    const rate = good + again > 0 ? good / (good + again) : null;
+    const corr = last.corr || 0, limit = last.limit || 0, left = last.ended === 'left';
+    if (rate !== null && rate >= n(cfg.GROW_RIGHT_RATE, 0.8) && corr <= n(cfg.GROW_MAX_CORRECTIONS, 2) &&
+        !limit && !left) {
+      return { size: Math.min(prev + STEP, MAX), newCap: n(cfg.NEW_WORDS_MAX, 4), why: 'up' };
+    }
+    let why = null;
+    if (rate !== null && rate < n(cfg.SHRINK_RIGHT_RATE, 0.6)) why = 'down-rate';
+    else if (corr >= n(cfg.SHRINK_MIN_CORRECTIONS, 5)) why = 'down-corrections';
+    else if (limit >= 1) why = 'down-limit';
+    else if (left) why = 'down-left';
+    if (why) return { size: Math.max(prev - STEP, MIN), newCap: n(cfg.NEW_WORDS_MIN, 2), why };
+    return { size: prev, newCap: n(cfg.NEW_WORDS_STEADY, 3), why: 'same' };
+  }
 
-    // Tier 1 — NEW words LEAD. This week's fresh errors are the priority, so
-    // they claim slots before any review; capped so a backlog drains over a
-    // few nights rather than landing all at once.
+  // Choose today's targets, under the plan (sessionPlan; the start plan when
+  // none is given).
+  //
+  // Tier 1 - NEW words lead (this week's fresh errors are the priority), up to
+  // the plan's new-word cap; the rest wait for a later night, and the cap is
+  // what stops a backlog landing all at once. Tier 2 - due reviews, the MOST
+  // missed first, then the longest due, until the session has the plan's size;
+  // a due word left over keeps its older due date, so it is ahead of newer due
+  // words next time. Tier 3 - on a light night, low-priority gap-fillers top
+  // the session up to FILLER_TARGET (or the plan's size, when smaller), most
+  // due first; they only take spare places, so a busy night gets none.
+  function pickSession(items, order, today, cfg, plan) {
+    plan = plan || sessionPlan([], cfg);
+    const active = it => it.pri !== 'low';       // low-priority don't compete
+    const size = plan.size;
+
+    // Tier 1 - new words.
     const queued = order.filter(id => items[id] && active(items[id]) &&
       items[id].reps === 0);
-    const starting = queued.slice(0, Math.min(cap, sessionMax));
+    const starting = queued.slice(0, Math.max(0, Math.min(plan.newCap, size)));
     const ids = starting.slice();
 
-    // Tier 2 — due reviews, MOST-LAPSED first, so the words the student keeps
-    // missing take the remaining slots ahead of ones that are merely due.
+    // Tier 2 - due reviews, most lapses first, then the earliest due.
     const due = Object.keys(items)
       .filter(id => active(items[id]) && items[id].reps > 0 &&
         items[id].due && items[id].due <= today)
@@ -11915,21 +11989,19 @@ const Sched = (() => {
         items[a].due.localeCompare(items[b].due));
     let reviews = 0;
     for (const id of due) {
-      if (ids.length >= sessionMax) break;
+      if (ids.length >= size) break;
       ids.push(id); reviews++;
     }
 
-    // Tier 3 — low-priority gap-fillers top a LIGHT night up to DAILY_MAX (the
-    // comfortable filler target), most-due first. They only take spare slots,
-    // so they never displace real work; a busy night (already past DAILY_MAX
-    // from due reviews) gets none.
+    // Tier 3 - low-priority gap-fillers, on a light night.
+    const target = Math.min(cfg.FILLER_TARGET == null ? 10 : cfg.FILLER_TARGET, size);
     let fillers = 0;
-    if (ids.length < cfg.DAILY_MAX) {
+    if (ids.length < target) {
       const pool = Object.keys(items)
         .filter(id => items[id].pri === 'low')
         .sort((a, b) => (items[a].due || '9999').localeCompare(items[b].due || '9999'));
       for (const id of pool) {
-        if (ids.length >= cfg.DAILY_MAX) break;
+        if (ids.length >= target) break;
         ids.push(id); fillers++;
       }
     }
@@ -11937,7 +12009,8 @@ const Sched = (() => {
     return {
       ids, started: starting.length, reviews, fillers,
       deferred: due.length - reviews,
-      waiting: queued.length - starting.length
+      waiting: queued.length - starting.length,
+      plan
     };
   }
 
@@ -11964,7 +12037,7 @@ const Sched = (() => {
     return { phase: 'done', tries: tries };
   }
 
-  return { grade, fsrsInterval, pickSession, deckState, dailyRungs, fixupNext };
+  return { grade, fsrsInterval, pickSession, sessionPlan, deckState, dailyRungs, fixupNext };
 })();
 </script>
 <script>
@@ -15037,9 +15110,14 @@ const Procedures = (() => {
 // algorithm -> normal exposure algorithm. Test -> incorrect -> Identify error
 // type -> Enter that error correction pipeline -> retest without scaffolds
 // -> Correct -> in-lesson spacing algorithm -> normal exposure algorithm".
-// The in-lesson spacing itself is lesson.js; the "normal exposure algorithm"
-// (CONFIG.LADDER then FSRS, scheduler.js) is unchanged and decides WHEN a
-// word comes round. This decides what a word's state is.
+// The in-lesson spacing itself is lesson.js (3.0.23: two rounds of comebacks,
+// spacers, the 15- and 20-minute marks; every word reached goes on the paper
+// test); the "normal exposure algorithm" (CONFIG.LADDER then FSRS,
+// scheduler.js) is unchanged and decides WHEN a word comes round, and
+// Sched.sessionPlan (3.0.23) how many come in one session. This decides what
+// a word's state is; none of the stage rules changed in 3.0.23 - a stage-2
+// word on the paper test stays in stage 2 when right and goes back to stage 1,
+// to redo, when wrong (afterPaper), as before.
 //
 // State on the item (the target, so a morph/rule target's stage applies to
 // whichever pool word shows):
@@ -15180,15 +15258,24 @@ const Stages = (() => {
     return Object.assign({}, item, { errs: errs.slice(-10) });
   }
 
-  // One finished session, as it is kept and reported. `runs` are the
-  // correction procedures run this session ({ w, type, steps }): corr counts
-  // them, procs keeps up to 20 so Tim can see which steps a child needed.
-  // checks: the in-lesson checks ({ w, n: 1|2, ok }); paper: the paper test
+  // One session, as it is kept and reported. `runs` are the correction
+  // procedures run this session ({ w, type, steps }): corr counts them, procs
+  // keeps up to 20 so Tim can see which steps a child needed. checks: the
+  // in-lesson comebacks ({ w, n: 1|2, ok }; 3.0.23: n 0 is a spacer, an earlier
+  // word asked again to space the others); paper: the paper test
   // ({ n, right, wrong }) or null when there was none. 3.0.21 (2026-10-20):
   // the step that the record's two other fields counted is gone (DESIGN
   // Decision 272), so the record lost them; an older report that still
   // carries them is read as before (tools/ingest_report.py reads them with
   // .get and ignores them).
+  // 3.0.23 (2026-10-21, run 20261021-sessions; DESIGN Decision 312): the
+  // session system's fields - size and newCap (the plan the session was built
+  // to, Sched.sessionPlan; null on a record from before), why (the plan's
+  // reason: 'start', 'up', 'same', 'down-rate', 'down-corrections',
+  // 'down-limit' or 'down-left'), limit (0; 1 = the 15-minute mark took words
+  // off; 2 = the 20-minute mark ended the lesson) and ended ('done', or 'left':
+  // a session the family did not finish, recorded when the app next opened -
+  // done then counts the words reached and paper is null).
   // No image and no name ever goes in here.
   function sessionRecord(rec) {
     const s = rec;
@@ -15205,7 +15292,12 @@ const Stages = (() => {
       corr: runs.length,
       procs: runs.slice(0, 20).map(r => ({ w: r.w, type: r.type, steps: (r.steps || []).slice() })),
       checks: (s.checks || []).slice(0, 60).map(c => ({ w: c.w, n: c.n, ok: !!c.ok })),
-      paper: p ? { n: p.n || 0, right: p.right || 0, wrong: p.wrong || 0 } : null
+      paper: p ? { n: p.n || 0, right: p.right || 0, wrong: p.wrong || 0 } : null,
+      size: s.size == null ? null : s.size,
+      newCap: s.newCap == null ? null : s.newCap,
+      why: s.why == null ? null : s.why,
+      limit: s.limit || 0,
+      ended: s.ended === 'left' ? 'left' : 'done'
     };
   }
 
@@ -15244,120 +15336,284 @@ const Stages = (() => {
 })();
 </script>
 <script>
-// lesson.js — the in-lesson spacing queue (v3, slice 2).
+// lesson.js - the in-lesson queue (v3; rewritten for 3.0.23, the session system,
+// build loop run 20261021-sessions, 2026-10-21).
 //
-// Pure: no DOM, no storage. app.js drives a session through it; tested in
-// Node (tests/test_stages.mjs, tests/test_paper.mjs).
+// Pure: no DOM, no storage, no clock of its own. app.js drives a session through
+// it and passes the time in (atTime). Tested in Node: tests/test_sessions.mjs
+// sweeps it over sessions of 1 to 25 words and many answer patterns;
+// tests/test_stages.mjs and tests/test_paper.mjs run it with the stage rules.
 //
-// Tim (2026-10-08), Type 4: "If correct move on and check the word again
-// after the next word in the list for that day. Then check again two words
-// later. Then test again at the end of the session." His flow chart: "Test
-// -> correct -> in-lesson spacing algorithm -> normal exposure algorithm";
-// "The last check of all the words from that days in-session repetition
-// cycle should be like a spelling test and done on paper".
+// Why it was rewritten. Tim, verbatim (2026-10-20): "The repetitions of the
+// words seems strange." The 3.0.22 queue put a check that would land past the
+// end of the list AT the end, so the last words' checks came back to back. His
+// fix: never ask the same word twice in a row, and let the paper test stand as
+// the last check when there are no words left to space with. His answers on the
+// design (2026-10-21), verbatim: "1. Yes, it should come back at least twice
+// more. Instead of a hard and fast rule about coming back two words later, maybe
+// it needs to be based on the amount of words." "2. For the words at the end of
+// the queue, lets being back the earlier words to space them out" "3. We need to
+// limit the amount of words that are taught. (I think this limit should be
+// adapative. ... I think we need a hard limit of 20 minutes at which stage it
+// cuts to the paper test and only tests the words that they have been working
+// on." On the proposal: "If my session had 12 words, why are we only testing 8
+// on the paper test? I want all the words tested." Then: "Build it".
 //
-// The day's words are tested in order ('first' entries). After a
-// correction, or a word's first test when it needs spacing (a new word, a
-// word still in stage 1, a word to redo), the word is checked again after
-// the next word (check 1, CONFIG.INLESSON_GAPS[0] = 1 word between) and again
-// two words after that (check 2, INLESSON_GAPS[1] = 2). A check that would
-// land past the end of the list falls to the end. Passing the last check
-// puts the word on the paper list (the end-of-session paper test). A wrong
-// check is corrected (by the app) and the spacing restarts from check 1;
-// after INLESSON_MAX_RESTARTS restarts the word goes straight to the paper
-// list.
+// The rules (every number is in src/data.js CONFIG):
+//   N = the session's words; G1 = max(FIRST_COMEBACK_MIN, ceil(FIRST_COMEBACK_SHARE
+//   x N)) - 2 for any session up to 20 words; the 10% only adds a turn above that.
+//   Round 1: each word's first go, in order. A practice word (new, stage 1, a
+//   redo, or wrong today: app.js says so with `spacing`) comes back once
+//   (comeback 1) at the earliest place at least G1 other turns on where the gap
+//   rule holds.
+//   Round 2: when the last first go is answered (or the 15-minute mark takes the
+//   rest), each practice word comes back once more (comeback 2), in first-go
+//   order; a comeback 1 still waiting comes first, then its comeback 2.
+//   The gap rule, everywhere: never the same word twice in a row, and at least
+//   SAME_WORD_GAP other turns between two appearances of a word (a spacer is an
+//   appearance too).
+//   Spacers (Tim's "bring back the earlier words"): when no other word is left to
+//   space a comeback with, an earlier word of the session comes back as a plain
+//   "Spell W." (kind 'spacer'): a word already reached, not the comeback's word,
+//   not a word the cap sent to the paper test, itself at least SAME_WORD_GAP
+//   turns back, the least recently asked first (ties: first-go order), a word
+//   with nothing still to come before one that has, and only as many as needed.
+//   With 3 or more words this always works, so no comeback is ever dropped; a
+//   session of 1 or 2 words cannot space a comeback at all, and its paper test is
+//   the only check.
+//   A wrong comeback or a wrong spacer: the app corrects it; restarts[id] + 1;
+//   while that is at most COMEBACK_RESTARTS_MAX the word comes back once more
+//   (the same comeback number; comeback 1 after a spacer) after G1 other turns,
+//   before anything else of that word; after that the word goes straight to the
+//   paper test and is not asked again before it.
+//   The time (atTime, ms since the session started): from NO_NEW_WORDS_AFTER_MIN
+//   minutes no new first go starts - the words not reached leave the queue
+//   untouched (never graded, still due, first next time), limit 1 when any were
+//   left, and Round 2 is built from the words reached; from PAPER_TEST_AFTER_MIN
+//   minutes nothing more is asked after the entry on screen (its correction
+//   included): the paper test comes next (limit 2 when anything was left).
+//   The paper test (paperList): every word that had its first go, first-go order.
 //
-//   start(items)                 items: [{ id, word }] -> state
-//   current(state)               the entry to run now, or null (then: paper)
-//   advance(state, outcome)      the current entry is finished -> new state
-//       outcome for a 'first' entry:  { right, spacing }  (spacing: does this
-//                                     word get the in-lesson checks)
-//       outcome for a 'check' entry:  { right }  (a wrong check has been
-//                                     corrected by the app already)
-//   paperList(state)             [{ id, word }] in the order of the session
-//   order(state)                 the queue as labels: A, A1, A2 ... (tests)
+// How: the turns already asked never change. The queue ahead is planned afresh
+// after every answer (schedule): each next turn is a comeback that is due and
+// spaced - a comeback 1 or a restart before Round 2's own (which are only
+// appended), and of those the one asked for latest, which is how a new
+// comeback takes the first place at least G1 turns on; Round 2's in first-go
+// order - else the next first go, else (in Round 2) a spacer.
+//
+//   start(items, cfg)            items [{ id, word }] -> state (cfg: CONFIG if left out)
+//   current(state)               { id, word, kind: 'first' } | { id, word, kind: 'check',
+//                                n: 1 | 2 } | { id, word, kind: 'spacer' } | null (then:
+//                                the paper test)
+//   advance(state, outcome, cfg) the entry on screen is finished -> a new state
+//       a 'first':               { right, spacing }  (spacing true: a practice word)
+//       a 'check' or a 'spacer': { right }  (a wrong one has been corrected already)
+//   atTime(state, elapsedMs, cfg) the 15- and 20-minute marks -> a new state
+//                                (idempotent)
+//   paperList(state)             [{ id, word }] every word reached, first-go order
+//   reached(state)               ids whose first go ran, first-go order
+//   unreached(state)             ids the 15- or 20-minute mark took off the queue
+//   order(state, labelOf)        the queue as labels A, A1, A2, A~ (a spacer): tests
+//   state.limit                  0 | 1 (the 15-minute mark took words) | 2 (the
+//                                20-minute mark ended the queue)
+//   state.restarts               id -> wrong comebacks and spacers today
 const Lesson = (() => {
   const cfgOf = cfg => cfg || (typeof CONFIG !== 'undefined' ? CONFIG : {});
-  const copy = st => ({
-    q: st.q.map(e => Object.assign({}, e)), pos: st.pos,
-    paper: st.paper.slice(), restarts: Object.assign({}, st.restarts),
-    spaced: Object.assign({}, st.spaced), ord: Object.assign({}, st.ord)
-  });
+  const num = (v, d) => (typeof v === 'number' && isFinite(v) ? v : d);
+  const clone = st => JSON.parse(JSON.stringify(st));
 
-  function start(items) {
-    const ord = {};
-    (items || []).forEach((x, i) => { if (!(x.id in ord)) ord[x.id] = i; });
-    return {
-      q: (items || []).map(x => ({ id: x.id, word: x.word, kind: 'first' })),
-      pos: 0,
-      paper: [],          // ids whose spacing ended today (the paper list)
-      restarts: {},       // id -> restarts today
-      spaced: {},         // id -> true when its spacing ran today
-      ord
+  function start(items, cfg) {
+    const c = cfgOf(cfg);
+    const ids = [], words = {}, ord = {};
+    (items || []).forEach(x => {
+      if (!x || x.id == null || Object.prototype.hasOwnProperty.call(ord, x.id)) return;
+      ord[x.id] = ids.length;
+      ids.push(x.id);
+      words[x.id] = x.word;
+    });
+    const g1 = Math.max(num(c.FIRST_COMEBACK_MIN, 2), Math.ceil(num(c.FIRST_COMEBACK_SHARE, 0.1) * ids.length));
+    const st = {
+      ids, words, ord,
+      g1,                                  // other turns before a comeback 1 or a restart
+      gap: num(c.SAME_WORD_GAP, 2),        // other turns between two appearances, always
+      maxr: num(c.COMEBACK_RESTARTS_MAX, 2),
+      q: [], pos: 0,                       // the turns: q[0 .. pos-1] asked, q[pos ..] planned
+      firsts: ids.slice(),                 // first goes still to come
+      reachedIds: [],                      // first goes that ran, in order
+      unreachedIds: [],                    // first goes the time marks took off
+      practice: {},                        // id -> true: gets the two comebacks
+      chains: {},                          // id -> [{ n, min }] its comebacks still to come
+      capped: {},                          // id -> true: straight to the paper test
+      restarts: {},                        // id -> count
+      round2: false, cut15: false, cut20: false,
+      limit: 0
     };
+    return schedule(st);
   }
 
   function current(st) {
-    return st && st.pos < st.q.length ? st.q[st.pos] : null;
+    if (!st || !st.q || st.pos >= st.q.length) return null;
+    const e = st.q[st.pos];
+    return e.kind === 'check'
+      ? { id: e.id, word: e.word, kind: 'check', n: e.n }
+      : { id: e.id, word: e.word, kind: e.kind };
   }
 
-  function gaps(cfg) {
-    const g = cfgOf(cfg).INLESSON_GAPS;
-    return Array.isArray(g) && g.length ? g : [1, 2];
+  // Plan the turns ahead from what is still to come. The asked turns stay.
+  function schedule(st) {
+    const q = st.q.slice(0, st.pos);
+    if (st.cut20) { st.q = q; return st; }
+    const last = {};
+    q.forEach((e, i) => { last[e.id] = i; });
+    const chains = {};
+    Object.keys(st.chains).forEach(id => {
+      if (!st.capped[id] && st.chains[id] && st.chains[id].length) chains[id] = st.chains[id].slice();
+    });
+    const firsts = st.firsts.slice();
+    const gapOK = (id, j) => !Object.prototype.hasOwnProperty.call(last, id) || j - last[id] - 1 >= st.gap;
+    const put = (id, kind, n) => {
+      const e = { id, word: st.words[id], kind };
+      if (kind === 'check') e.n = n;
+      last[id] = q.length;
+      q.push(e);
+    };
+    for (let guard = 0; guard < 100000; guard++) {
+      const j = q.length;
+      const waiting = Object.keys(chains).filter(id => chains[id].length);
+      if (!waiting.length && !firsts.length) break;
+      // 1. a comeback that is due and spaced: a comeback 1 or a restart before
+      //    Round 2's own (which are only appended), the one asked for latest
+      //    first; Round 2's in first-go order
+      let best = null;
+      const better = (a, b) => {
+        if (!!a.r2 !== !!b.r2) return !a.r2;
+        if (!a.r2 && a.min !== b.min) return a.min > b.min;
+        return st.ord[a.id] < st.ord[b.id];
+      };
+      waiting.forEach(id => {
+        const h = chains[id][0];
+        if (h.min > j || !gapOK(id, j)) return;
+        const c = { id, min: h.min, n: h.n, r2: !!h.r2 };
+        if (!best || better(c, best)) best = c;
+      });
+      if (best) { chains[best.id].shift(); put(best.id, 'check', best.n); continue; }
+      // 2. the next first go
+      if (firsts.length) { put(firsts.shift(), 'first'); continue; }
+      // 3. Round 1 has run out of turns: what is left waits for Round 2
+      if (!st.round2) break;
+      // 4. a spacer, for the comeback that can come soonest
+      const readyAt = id => Math.max(chains[id][0].min,
+        Object.prototype.hasOwnProperty.call(last, id) ? last[id] + 1 + st.gap : 0);
+      let target = null;
+      waiting.forEach(id => {
+        if (target === null || readyAt(id) < readyAt(target) ||
+            (readyAt(id) === readyAt(target) && st.ord[id] < st.ord[target])) target = id;
+      });
+      const cands = st.reachedIds.filter(id => id !== target && !st.capped[id] && gapOK(id, j));
+      // a word with nothing still to come first, then one waiting only for its
+      // Round 2 comeback, then (rarely: above 20 words) one waiting for a restart
+      const tier = id => (!(chains[id] && chains[id].length) ? 0 : chains[id][0].r2 ? 1 : 2);
+      const best3 = cands.length ? Math.min.apply(null, cands.map(tier)) : 0;
+      const pool = cands.filter(id => tier(id) === best3);
+      if (pool.length) {
+        pool.sort((a, b) => (last[a] - last[b]) || (st.ord[a] - st.ord[b]));
+        put(pool[0], 'spacer');
+        continue;
+      }
+      // 5. no other word can space it: when only its own G1 holds it back, it
+      //    comes now (the gap rule still holds)
+      if (gapOK(target, j)) { const h = chains[target].shift(); put(target, 'check', h.n); continue; }
+      // 6. nothing can space it (only 1 or 2 words to ask): the paper test is its
+      //    last check
+      delete chains[target];
+    }
+    st.q = q;
+    return st;
   }
 
-  // Put check n of a word `gap` entries after the current one (or at the end).
-  function schedule(st, e, n, cfg) {
-    const gap = gaps(cfg)[n - 1];
-    const at = Math.min(st.pos + 1 + gap, st.q.length);
-    st.q.splice(at, 0, { id: e.id, word: e.word, kind: 'check', n });
-  }
-  function toPaper(st, e) {
-    if (st.paper.indexOf(e.id) === -1) st.paper.push(e.id);
+  // Round 2: one more comeback for each practice word, in first-go order.
+  function round2(st) {
+    st.round2 = true;
+    st.reachedIds.forEach(id => {
+      if (!st.practice[id] || st.capped[id]) return;
+      (st.chains[id] = st.chains[id] || []).push({ n: 2, min: st.pos, r2: true });
+    });
   }
 
   function advance(state, outcome, cfg) {
-    const st = copy(state);
+    const st = clone(state);
     const e = current(st);
     if (!e) return st;
     outcome = outcome || {};
-    const max = cfgOf(cfg).INLESSON_MAX_RESTARTS == null ? 3 : cfgOf(cfg).INLESSON_MAX_RESTARTS;
+    const at = st.pos;
     if (e.kind === 'first') {
+      st.firsts = st.firsts.filter(id => id !== e.id);
+      if (st.reachedIds.indexOf(e.id) === -1) st.reachedIds.push(e.id);
       if (!outcome.right || outcome.spacing) {
-        st.spaced[e.id] = true;
+        st.practice[e.id] = true;
         st.restarts[e.id] = st.restarts[e.id] || 0;
-        schedule(st, e, 1, cfg);
+        st.chains[e.id] = [{ n: 1, min: at + 1 + st.g1 }];
       }
-    } else if (e.kind === 'check') {
-      if (outcome.right) {
-        if (e.n < gaps(cfg).length) schedule(st, e, e.n + 1, cfg);
-        else toPaper(st, e);
-      } else if ((st.restarts[e.id] || 0) >= max) {
-        toPaper(st, e);                               // enough: straight to the paper list
-      } else {
+    } else {
+      if (e.kind === 'check' && st.chains[e.id] && st.chains[e.id].length) st.chains[e.id].shift();
+      if (!outcome.right) {
         st.restarts[e.id] = (st.restarts[e.id] || 0) + 1;
-        schedule(st, e, 1, cfg);                      // the spacing restarts
+        if (st.restarts[e.id] <= st.maxr) {
+          (st.chains[e.id] = st.chains[e.id] || []).unshift({ n: e.kind === 'check' ? e.n : 1, min: at + 1 + st.g1 });
+        } else {
+          st.capped[e.id] = true;                     // enough: straight to the paper test
+          delete st.chains[e.id];
+        }
       }
     }
     st.pos++;
+    if (!st.round2 && !st.firsts.length) round2(st);
+    return schedule(st);
+  }
+
+  // The 15- and 20-minute marks. elapsedMs: since the session started.
+  function atTime(state, elapsedMs, cfg) {
+    const c = cfgOf(cfg);
+    const st = clone(state);
+    const ms = Number(elapsedMs) || 0;
+    const hard = num(c.PAPER_TEST_AFTER_MIN, 20) * 60000;
+    const soft = num(c.NO_NEW_WORDS_AFTER_MIN, 15) * 60000;
+    if (ms >= hard && !st.cut20) {
+      const left = st.q.length > st.pos;
+      st.firsts.forEach(id => st.unreachedIds.push(id));
+      st.firsts = [];
+      st.chains = {};
+      st.cut20 = st.cut15 = st.round2 = true;
+      if (left) st.limit = 2;
+      st.q = st.q.slice(0, st.pos);
+      return st;
+    }
+    if (ms >= soft && !st.cut15) {
+      st.cut15 = true;
+      if (st.firsts.length) {
+        st.firsts.forEach(id => st.unreachedIds.push(id));
+        st.firsts = [];
+        st.limit = Math.max(st.limit, 1);
+      }
+      if (!st.round2) round2(st);
+      return schedule(st);
+    }
     return st;
   }
 
   function paperList(st) {
-    const word = {};
-    st.q.forEach(e => { if (!(e.id in word)) word[e.id] = e.word; });
-    return st.paper.slice()
-      .sort((a, b) => (st.ord[a] == null ? 1e9 : st.ord[a]) - (st.ord[b] == null ? 1e9 : st.ord[b]))
-      .map(id => ({ id, word: word[id] }));
+    return (st.reachedIds || []).map(id => ({ id, word: st.words[id] }));
   }
+  function reached(st) { return (st.reachedIds || []).slice(); }
+  function unreached(st) { return (st.unreachedIds || []).slice(); }
 
-  // The queue as short labels (A, A1, A2), for tests and debugging.
+  // The queue as short labels (A, A1, A2, A~), for tests and debugging.
   function order(st, labelOf) {
     const lab = labelOf || (e => e.id);
-    return st.q.map(e => lab(e) + (e.kind === 'check' ? String(e.n) : ''));
+    return st.q.map(e => lab(e) + (e.kind === 'check' ? String(e.n) : e.kind === 'spacer' ? '~' : ''));
   }
 
-  return { start, current, advance, paperList, order };
+  return { start, current, advance, atTime, paperList, reached, unreached, order };
 })();
 </script>
 <script>
@@ -22023,6 +22279,14 @@ const Voice = (() => {
   // values, to be set by Tim's ear on his phone.
   const PIECE_GAP_MS = 90;
   const SENTENCE_GAP_MS = 300;
+  // 3.0.23 (2026-10-21, build loop run 20261021-sessions; DESIGN Decision 313): the
+  // join after the lead of a hidden spelling test and its word ("Spell" + prediction,
+  // "Now spell" + the word, "How do we spell" + the word) is shorter. Tim, verbatim
+  // (2026-10-20): "The gap between spell (and the word could be a little shorter."
+  // 30 ms instead of PIECE_GAP_MS 90, so the join is 60 ms shorter. His approved
+  // "Spell" clip (audio/q/spell-2747aac6.mp3) keeps its bytes and its own quiet tail.
+  const LEAD_GAP_MS = 30;
+  const LEAD_TEXTS = ['Spell', 'Now spell', 'How do we spell'];
   let el = null;
   let run = 0;                    // bumps to cancel an in-flight sequence
 
@@ -22409,6 +22673,8 @@ const Voice = (() => {
   function gapAfter(p, next) {
     if (p && next && p.kind === 'l' && next.kind === 'l') return LETTER_GAP_MS;
     if (p && next && /[.?!]$/.test(String(p.text || ''))) return SENTENCE_GAP_MS;
+    // 3.0.23: a hidden test's lead, then its word
+    if (p && next && p.kind === 'q' && next.kind === 'w' && LEAD_TEXTS.indexOf(p.text) !== -1) return LEAD_GAP_MS;
     return PIECE_GAP_MS;
   }
   // Say a whole line from his pieces, through the one element, with gapAfter's pauses.
@@ -22468,6 +22734,7 @@ const Voice = (() => {
     unlock, primed, SILENT_WAV,                    // 3.0.12: the Start tap primes the element
     sayLine, tile, match, gapAfter,                // 3.0.22 (B2): a whole line from Tim's pieces
     LETTER_GAP_MS, PIECE_GAP_MS, SENTENCE_GAP_MS,  // 3.0.22: the three pauses gapAfter uses
+    LEAD_GAP_MS,                                   // 3.0.23: the shorter join after "Spell"
     available: words.size > 0,
     wordCount: words.size,
     letterCount: letters.size,
@@ -22502,7 +22769,11 @@ const Voice = (() => {
 // during the lesson (lesson.js) and once more on paper at the end of the
 // session - the app says each word and the child writes it on a numbered
 // line of the page, then the grown-up types each word in exactly as it is
-// written. 3.0.21 (2026-10-20): no photo of the page is taken or kept any
+// written. 3.0.23 (2026-10-21): the session system - two rounds of comebacks
+// with the same word never twice running, a size that grows or shrinks with
+// the last session (Sched.sessionPlan), no new word after 15 minutes and the
+// paper test at 20, every word reached on the paper test, and a session left
+// unfinished kept on record (db.open, markOpen). 3.0.21 (2026-10-20): no photo of the page is taken or kept any
 // more (Tim, 2026-10-19: "What is the point of the photo then? Remove all
 // reference to it."). The segmentation
 // ladder (Spelling Mastery decks: oral, parent-marked) is unchanged.
@@ -22521,6 +22792,10 @@ const App = (() => {
   let reloading = false;   // a new app version is taking over this page
   let session = null;
   let flow = null;         // the step runner on screen (see below)
+  // 3.0.23: the session's clock - session.start, the times, the 15- and
+  // 20-minute marks (Lesson.atTime) and the open-session marker. Tests set a
+  // pretend one (test.setClock); the app never waits on it.
+  let clock = () => Date.now();
 
   // ---------- persistence ----------
 
@@ -22660,26 +22935,77 @@ const App = (() => {
 
   // ---------- session building ----------
 
-  // One session per day, capped by the scheduler (new words lead, then due
+  // One session per day, chosen by the scheduler (new words lead, then due
   // reviews, then light-night fillers). Each target is rendered as its current
-  // pool word, captured now.
+  // pool word, captured now. 3.0.23: the session's size and its new-word cap
+  // come from the last session on record (Sched.sessionPlan: start at 12, grow
+  // or shrink by 2 between 6 and 20), and the plan stays on the session so its
+  // record says what it was built to.
   function buildSession() {
-    const pick = Sched.pickSession(db.items, db.order, today(), CONFIG);
+    const plan = Sched.sessionPlan(db.sessions, CONFIG);
+    const pick = Sched.pickSession(db.items, db.order, today(), CONFIG, plan);
     if (!pick.ids.length) return null;
-    return newSession(pick.ids.map(id => ({ id, word: currentWord(db.items[id]) })));
+    return newSession(pick.ids.map(id => ({ id, word: currentWord(db.items[id]) })), plan);
   }
 
-  function newSession(items) {
+  function newSession(items, plan) {
     return {
       items,
+      plan: plan || null,    // 3.0.23: { size, newCap, why } (Sched.sessionPlan)
       key: today(),          // the day: the ladder is graded once per day
-      lesson: null,          // the in-lesson spacing queue (lesson.js)
-      times: {}, start: Date.now(), shownAt: null,
+      lesson: null,          // the in-lesson queue (lesson.js)
+      times: {}, start: clock(), shownAt: null,
       counts: { again: 0, good: 0 },
       runs: [],              // correction procedures run: { w, type, steps }
-      checks: [],            // in-lesson checks: { w, n, ok }
+      checks: [],            // in-lesson comebacks: { w, n, ok } (n 0: a spacer)
       paper: null            // the paper test: { n, right, wrong }
     };
+  }
+
+  // ---------- 3.0.23: the open-session marker ----------
+  // A session lives in memory only, so one the family closed half way used to
+  // leave no trace (Tim's own session of 2026-10-20 had no record). db.open
+  // marks the session running: written when the lesson starts (startNormal),
+  // refreshed on every save during it, cleared when it ends (endSession). When
+  // the app next opens (init) and the marker is from another day or untouched
+  // for CONFIG.SESSION_LEFT_AFTER_MIN minutes, it goes on record as a session
+  // with ended 'left' (done = the words reached, no paper test); so does any
+  // marker still there when a new session starts (startNormal). resync never
+  // closes it: another copy of the app on the phone may be in that session.
+  // No name goes in it (the record's fields, nothing else).
+  function markOpen() {
+    if (!session || !db) return;
+    const plan = session.plan || {};
+    db.open = {
+      d: session.key, startedAt: session.start, lastAt: clock(),
+      size: plan.size == null ? null : plan.size,
+      newCap: plan.newCap == null ? null : plan.newCap,
+      why: plan.why == null ? null : plan.why,
+      reached: (session.lesson ? Lesson.reached(session.lesson).length : 0) + (session.segTotal || 0),
+      good: session.counts.good, again: session.counts.again,
+      runs: session.runs.slice(), checks: session.checks.slice(),
+      limit: session.lesson ? (session.lesson.limit || 0) : 0
+    };
+  }
+  function openIsStale() {
+    const o = db && db.open;
+    if (!o) return false;
+    const mins = CONFIG.SESSION_LEFT_AFTER_MIN == null ? 30 : CONFIG.SESSION_LEFT_AFTER_MIN;
+    return o.d !== today() || clock() - (o.lastAt || 0) > mins * 60000;
+  }
+  // The marker becomes a 'left' session record. The caller saves.
+  function closeOpen() {
+    const o = db && db.open;
+    if (!o) return false;
+    db.sessions.push(Stages.sessionRecord({
+      d: o.d, secs: Math.max(0, Math.round(((o.lastAt || 0) - (o.startedAt || 0)) / 1000)),
+      done: o.reached || 0, again: o.again || 0, good: o.good || 0,
+      runs: o.runs || [], checks: o.checks || [], paper: null,
+      size: o.size, newCap: o.newCap, why: o.why, limit: o.limit || 0, ended: 'left'
+    }));
+    if (db.sessions.length > 200) db.sessions = db.sessions.slice(-200);
+    delete db.open;
+    return true;
   }
 
   function gradeItem(id, grade) {
@@ -23017,7 +23343,8 @@ const App = (() => {
     renderProfiles();
     // Show what today's session will ACTUALLY hold, not the raw backlog —
     // intake is throttled, so a big deck must not promise a big session.
-    const pick = Sched.pickSession(db.items, db.order, today(), CONFIG);
+    // 3.0.23: under the same plan buildSession uses (Sched.sessionPlan).
+    const pick = Sched.pickSession(db.items, db.order, today(), CONFIG, Sched.sessionPlan(db.sessions, CONFIG));
     $('home-due').textContent = pick.ids.length - pick.started;
     $('home-new').textContent = pick.started;
     $('home-total').textContent = Object.keys(db.items).length;
@@ -23114,7 +23441,12 @@ const App = (() => {
   function startNormal() {
     try { Voice.unlock(); } catch (e) { /* no audio here: the phone voice still speaks */ }
     if (!session) return;
-    session.lesson = Lesson.start(session.items);
+    session.lesson = Lesson.start(session.items, CONFIG);
+    // 3.0.23: an earlier session never finished goes on record as left, and
+    // this one is marked open (markOpen above).
+    closeOpen();
+    markOpen();
+    save();
     nextItem();
   }
 
@@ -23152,18 +23484,25 @@ const App = (() => {
       which: () => Stages.whichMode(id != null ? db.items[id] : null, CONFIG) };
   }
 
-  // The next entry of the lesson: a word's first test today or an in-lesson
-  // check - both the hidden "Spell W." alone (3.0.5, Tim: "When they get it
-  // right and we keep testing them on it, it should just be the spelling.").
-  // The queue empty -> the paper test.
+  // The next entry of the lesson: a word's first test today, a comeback, or
+  // (3.0.23) a spacer - all the hidden "Spell W." alone (3.0.5, Tim: "When they
+  // get it right and we keep testing them on it, it should just be the
+  // spelling."). The queue empty -> the paper test. 3.0.23: the clock first -
+  // from 15 minutes no new word starts, and at 20 the queue ends after the
+  // entry just finished, so the paper test begins (Lesson.atTime).
   function nextItem() {
     if (!session) return;
+    if (session.lesson) {
+      const was = session.lesson.limit || 0;
+      session.lesson = Lesson.atTime(session.lesson, clock() - session.start, CONFIG);
+      if ((session.lesson.limit || 0) !== was) { markOpen(); save(); }
+    }
     const e = Lesson.current(session.lesson);
     if (!e) { startPaper(); return; }
     const parts = morphParts(e.word);
     flow = { mode: 'exposure', entry: e, id: e.id, word: e.word, parts, tiles: [], ticks: [], after: null, runner: null };
     flow.runner = Procedures.exposure(e.word, parts, 'plain', ctx());  // ctx() after flow: it reads flow.id
-    session.shownAt = Date.now();
+    session.shownAt = clock();
     clearFeedback();
     renderStep();
     show('scr-step');
@@ -23184,6 +23523,7 @@ const App = (() => {
     const onDone = flow.onDone;
     if (db.items[id]) db.items[id] = Stages.noteErrors(Stages.afterCorrection(db.items[id]), r.analyses, today());
     if (session) session.runs = session.runs.concat(r.runs);
+    markOpen();                                       // 3.0.23 (no session: nothing)
     save();
     flow = null;
     if (onDone) onDone(r.ok);
@@ -23201,9 +23541,10 @@ const App = (() => {
       if (outcome.spacing && it) db.items[e.id] = Stages.startSpacing(it, today());
     }
     session.lesson = Lesson.advance(session.lesson, outcome, CONFIG);
-    if (e.kind === 'check' && !outcome.right && db.items[e.id]) {
+    if ((e.kind === 'check' || e.kind === 'spacer') && !outcome.right && db.items[e.id]) {
       db.items[e.id] = Stages.noteRestarts(db.items[e.id], session.lesson.restarts[e.id] || 0);
     }
+    markOpen();
     save();
     nextItem();
   }
@@ -23344,7 +23685,7 @@ const App = (() => {
   function countLabel() {
     if (flow.mode === 'correction') return 'Let’s fix it';
     if (flow.mode === 'paper') return 'Spelling test on paper';
-    if (flow.entry && flow.entry.kind === 'check') return 'Checking a word again';
+    if (flow.entry && (flow.entry.kind === 'check' || flow.entry.kind === 'spacer')) return 'Checking a word again';
     const q = session.lesson.q;
     const firsts = q.filter(x => x.kind === 'first').length;
     const upTo = q.slice(0, session.lesson.pos + 1).filter(x => x.kind === 'first').length;
@@ -23700,13 +24041,14 @@ const App = (() => {
 
   // 3.0.5: an exposure (the day's first test or an in-lesson check) is the
   // spelling alone, so its one answer is the spelling: mark it, then go on or
-  // correct it.
+  // correct it. 3.0.23: a spacer (an earlier word asked again to space the
+  // others) runs exactly like a comeback and is kept in the checks as n 0.
   function afterExposureAnswer(s, res) {
     const id = flow.id, word = flow.word, e = flow.entry;
     const state = flow.runner.state;
     if (e.kind === 'first') {
       // The ladder is graded by the day's FIRST test only, once per day.
-      session.times[id] = Math.round((Date.now() - (session.shownAt || Date.now())) / 1000);
+      session.times[id] = Math.round((clock() - (session.shownAt || clock())) / 1000);
       const g = Stages.gradeFirst(db.items[id], state.spellRight, today());
       db.items[id] = g.item;
       if (g.grade) {
@@ -23714,8 +24056,9 @@ const App = (() => {
         session.counts[g.grade === 1 ? 'again' : 'good']++;
       }
     } else {
-      session.checks.push({ w: word, n: e.n, ok: !!state.spellRight });
+      session.checks.push({ w: word, n: e.kind === 'spacer' ? 0 : e.n, ok: !!state.spellRight });
     }
+    markOpen();
     save();
     $('step-tiles').classList.add('hidden');
     $('step-boxes').classList.add('hidden');
@@ -23766,6 +24109,10 @@ const App = (() => {
   // marks every word and runs the correction for a miss. Nothing is taken or
   // kept of the page (Tim, 2026-10-19: "What is the point of the photo then?
   // Remove all reference to it."); the page stays with the family.
+  // 3.0.23 (2026-10-21): the paper test has every word that had its first go
+  // today, in order - the words right first time too (Tim, verbatim: "If my
+  // session had 12 words, why are we only testing 8 on the paper test? I want
+  // all the words tested."); after the 20-minute mark, every word reached.
 
   function startPaper() {
     const words = Lesson.paperList(session.lesson);
@@ -23790,6 +24137,7 @@ const App = (() => {
     const id = s.pid, word = s.pword;
     if (db.items[id]) db.items[id] = Stages.afterPaper(db.items[id], res.right, today());
     session.paper[res.right ? 'right' : 'wrong']++;
+    markOpen();
     save();
     if (res.right) {
       feedback('✓ Word ' + s.paper + ' is right.', true);
@@ -23816,11 +24164,15 @@ const App = (() => {
   }
 
   function endSession() {
-    const secs = Math.round((Date.now() - session.start) / 1000);
+    const secs = Math.round((clock() - session.start) / 1000);
     const times = Object.values(session.times).sort((a, b) => a - b);
+    // 3.0.23: done counts the words reached (a time mark may have left some for
+    // next time), and the record says what the session was built to and why.
+    const done = (session.lesson ? Lesson.reached(session.lesson).length : 0) + (session.segTotal || 0);
+    const plan = session.plan || {};
     const rec = Stages.sessionRecord({
       d: today(), secs,
-      done: session.items.length + (session.segTotal || 0),
+      done,
       seg: session.segTotal || 0,
       segGrad: session.segGraduated || 0,
       again: session.counts.again,
@@ -23828,12 +24180,16 @@ const App = (() => {
       medSecs: times.length ? times[Math.floor(times.length / 2)] : 0,
       runs: session.runs,
       checks: session.checks,
-      paper: session.paper
+      paper: session.paper,
+      size: plan.size, newCap: plan.newCap, why: plan.why,
+      limit: session.lesson ? (session.lesson.limit || 0) : 0,
+      ended: 'done'
     });
     db.sessions.push(rec);
     if (db.sessions.length > 200) db.sessions = db.sessions.slice(-200);
+    delete db.open;                                   // 3.0.23: finished, not left
     save();
-    $('sum-done').textContent = session.items.length + (session.segTotal || 0);
+    $('sum-done').textContent = done;
     $('sum-right').textContent = session.counts.good;
     $('sum-wrong').textContent = session.counts.again;
     renderBanner();
@@ -24253,6 +24609,9 @@ const App = (() => {
     // load() also carries a 2.x family's practice over to v3's keys, once per
     // child (profiles.js -> migrate.js); the 2.x record is left as it was.
     load();
+    // 3.0.23: a session left unfinished (from another day, or untouched for
+    // CONFIG.SESSION_LEFT_AFTER_MIN minutes) goes on record as left.
+    try { if (openIsStale()) { closeOpen(); save(); } } catch (e) { /* storage unavailable: tried next open */ }
     if (navigator.storage && navigator.storage.persist) {
       navigator.storage.persist();
     }
@@ -24293,6 +24652,8 @@ const App = (() => {
     // copy is looked at again, so a child never practises in a copy still
     // showing someone else. Never mid-session, and never while a name is
     // being typed. (review, 2026-09-15) v3: only v3's own keys count.
+    // 3.0.23: resync never closes an open-session marker (db.open) - the other
+    // copy may be in the middle of that session; init and startNormal do.
     const resync = () => {
       if (session || !db || justNamed) return;
       try {
@@ -24419,8 +24780,8 @@ const App = (() => {
   const test = {
     startCorrection(word, attempt, parts) {
       word = ensureItem(word);
-      session = newSession([{ id: word, word }]);
-      session.lesson = Lesson.start(session.items);
+      session = newSession([{ id: word, word }], Sched.sessionPlan(db.sessions, CONFIG));
+      session.lesson = Lesson.start(session.items, CONFIG);
       const g = Stages.gradeFirst(db.items[word], false, today());
       db.items[word] = g.item;
       if (g.grade) { gradeItem(word, g.grade); session.counts.again++; }
@@ -24428,9 +24789,10 @@ const App = (() => {
     },
     // A whole session over these words: [{ word, stage, wb }] (stage 2 =
     // right on an earlier paper test; none = new; wb: see ensureItem).
+    // 3.0.23: built under the current plan, so its record carries size and why.
     startSession(list) {
       const items = list.map(x => { const w = ensureItem(x.word, x.stage, x.wb); return { id: w, word: w }; });
-      session = newSession(items);
+      session = newSession(items, Sched.sessionPlan(db.sessions, CONFIG));
       segQueue = [];
       session.segTotal = 0;
       startNormal();
@@ -24514,7 +24876,12 @@ const App = (() => {
     problemOpen() { return !$('problem-panel').classList.contains('hidden'); },
     item(id) { return db.items[id] ? JSON.parse(JSON.stringify(db.items[id])) : null; },
     sessions() { return JSON.parse(JSON.stringify(db.sessions)); },
-    report() { return buildReport(); }
+    report() { return buildReport(); },
+    // 3.0.23: a pretend clock (fn returns ms; null puts Date.now back), the plan
+    // the next session would be built to, and the open-session marker (a copy).
+    setClock(fn) { clock = typeof fn === 'function' ? fn : () => Date.now(); },
+    plan() { return Sched.sessionPlan(db.sessions, CONFIG); },
+    open() { return db && db.open ? JSON.parse(JSON.stringify(db.open)) : null; }
   };
 
   return { init, test };

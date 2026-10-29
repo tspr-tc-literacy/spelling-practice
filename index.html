@@ -10573,7 +10573,7 @@ const CONFIG = {
   APP_NAME: 'Spelling Practice',
   // tools/publish_release.py refuses a release unless this, the built page and
   // sw.js's cache name ('spelling-app-v' + VERSION) all agree.
-  VERSION: '3.0.24',
+  VERSION: '3.0.25',
   // v3: the child types every answer and the app marks it (trim + lowercase).
   // false (3.0.5, 2026-10-13): the hint under each word is "Type it." and the
   // home screen says paper and a pen are only needed for the spelling test at
@@ -10668,6 +10668,13 @@ const CONFIG = {
   // A light night (few words due) is topped up with low-priority gap-fillers to
   // this many words, or to the session's size when that is smaller.
   FILLER_TARGET: 10,
+  // 3.0.25 (2026-10-29, build loop run 20261029-134906-attempt-log): the attempt
+  // log (every whole-word attempt: the day, the kind of go, what was typed, right
+  // or wrong; Stages.attemptOf in procedures.js) keeps this many of the newest
+  // entries on the device, the oldest dropped. A 12-word session makes about 72,
+  // so this is about 40 sessions, two 10-lesson cycles; every report carries all
+  // of them and the school's ledger keeps every one for good.
+  ATTEMPTS_KEEP: 3000,
   // 3.0.21 (2026-10-20): the two settings for the paper test's page photo
   // (its size on the phone and the 14 days it was kept) went with the photo
   // step (Tim, 2026-10-19: "What is the point of the photo then? Remove all
@@ -15258,6 +15265,66 @@ const Stages = (() => {
     return Object.assign({}, item, { errs: errs.slice(-10) });
   }
 
+  // ---------- 3.0.25: the attempt log ----------
+  // Marva's recommendation for the end-of-term parent report (2026-10-29), which
+  // Tim answered "Yes, build it" (build loop run 20261029-134906-attempt-log;
+  // DESIGN Decisions 344 on): "It should log every attempt for every word: the
+  // date, what kind of attempt it was, what the student typed, and whether it was
+  // right. That log goes into the report the family sends." db.att holds one
+  // compact entry per whole-word attempt, [n, d, k, w, t, r]:
+  //   n  a running number on this device (db.attN: 1, 2, 3 ...), so two equal
+  //      attempts on one day stay two entries and ingest can tell them apart
+  //   d  the phone's calendar day (Day.today)
+  //   k  the kind of go: 'f' the day's first test, 'c1' / 'c2' the in-lesson
+  //      comebacks (Lesson entry 'check', n 1 | 2), 's' a spacer, 'p' the paper
+  //      test (what the grown-up typed from the page), or, inside a correction,
+  //      the step's own id (t1-final, t4-spell, t4-spell-again, t4-final,
+  //      o-spell, t2-word-spell, t8-part ...)
+  //   w  the word the step asked for (step.word, or step.pword on the paper
+  //      test): t2-word-spell's teaching word, t8-part's partial word
+  //   t  what the child typed, as the app read it (res.value; '' when blank)
+  //   r  1 right, 0 wrong
+  // Only a typed step whose word IS its expected answer is a word attempt:
+  // morphograph spells, the level-3 positional asks, t4-point's letters and the
+  // walkthrough's typed answers are not logged (the session's procs already name
+  // those steps with right / wrong). The session link is d plus the order (n).
+  // attemptOf(step, res, mode, entry, day): the entry without its number
+  // [d, k, w, t, r], or null when the step is not a word attempt. mode is the
+  // screen's flow.mode ('exposure' | 'paper' | 'correction'), entry its Lesson
+  // entry (exposure only).
+  function attemptOf(step, res, mode, entry, day) {
+    if (!step || step.kind !== 'type' || !res) return null;
+    const w = step.word || step.pword;
+    if (!w || w !== step.expect) return null;
+    let k;
+    if (mode === 'exposure') {
+      const ek = entry && entry.kind;
+      k = ek === 'check' ? (entry.n === 2 ? 'c2' : 'c1') : ek === 'spacer' ? 's' : 'f';
+    } else if (mode === 'paper') {
+      k = 'p';
+    } else {
+      k = String(step.id);
+    }
+    return [day, k, w, res.value == null ? '' : String(res.value), res.right ? 1 : 0];
+  }
+  // noteAttempt(db, a, cfg): numbers attempt a (attemptOf's [d, k, w, t, r])
+  // with the next db.attN, appends it to db.att and keeps the newest
+  // CONFIG.ATTEMPTS_KEEP (the oldest are dropped). Changes db in place (a db
+  // from 3.0.24 or before, with no att, starts an empty log) and returns the
+  // entry [n, d, k, w, t, r].
+  function noteAttempt(db, a, cfg) {
+    if (!db || !Array.isArray(a)) return null;
+    const keepN = cfgOf(cfg).ATTEMPTS_KEEP;
+    const keep = typeof keepN === 'number' && keepN > 0 ? keepN : 3000;
+    if (!Array.isArray(db.att)) db.att = [];
+    const last = db.att.length ? Number(db.att[db.att.length - 1][0]) || 0 : 0;
+    db.attN = Math.max(typeof db.attN === 'number' ? db.attN : 0, last) + 1;
+    const e = [db.attN].concat(a.slice(0, 5));
+    db.att.push(e);
+    if (db.att.length > keep) db.att = db.att.slice(-keep);
+    return e;
+  }
+
   // One session, as it is kept and reported. `runs` are the correction
   // procedures run this session ({ w, type, steps }): corr counts them, procs
   // keeps up to 20 so Tim can see which steps a child needed. checks: the
@@ -15304,6 +15371,11 @@ const Stages = (() => {
   // The report the family sends (v 3). STU code only, never a name: the
   // family's name for a child lives in the device index, not in db. No
   // image ever goes in it (3.0.21: the app keeps none).
+  // 3.0.25 (2026-10-29, run 20261029-134906-attempt-log): `att`, every attempt
+  // entry the device holds (the attempt log above; [] when there is none). The
+  // device's cap IS the window: the device never knows which report reached
+  // Tim, so a lost email must not lose attempts; tools/ingest_report.py adds
+  // only the entries the ledger does not already hold.
   function buildReport(db, cfg, deck, exported) {
     cfg = cfgOf(cfg);
     return {
@@ -15327,12 +15399,13 @@ const Stages = (() => {
         errs: (it.errs || []).slice(-10),
         wb: it.wb || null                    // 3.0.2: tiles or typing boxes
       })),
-      sessions: (db.sessions || []).slice(-60)
+      sessions: (db.sessions || []).slice(-60),
+      att: Array.isArray(db.att) ? db.att.map(a => (Array.isArray(a) ? a.slice() : a)) : []   // 3.0.25
     };
   }
 
   return { needsSpacing, gradeFirst, startSpacing, noteRestarts, afterCorrection, afterPaper,
-    noteErrors, sessionRecord, buildReport, whichMode, afterWhich, isFirstWhich, FIRST_WHICH };
+    noteErrors, attemptOf, noteAttempt, sessionRecord, buildReport, whichMode, afterWhich, isFirstWhich, FIRST_WHICH };
 })();
 </script>
 <script>
@@ -23248,7 +23321,13 @@ const App = (() => {
       sessions: [],
       pendingReq: null,
       doneReqs: [],
-      lastCodeDate: null
+      lastCodeDate: null,
+      // 3.0.25 (2026-10-29, run 20261029-134906-attempt-log): the attempt log,
+      // one [n, d, k, w, t, r] per whole-word attempt (Stages.attemptOf /
+      // noteAttempt in procedures.js), and its running number. A record from
+      // 3.0.24 or before has neither and reads as an empty log.
+      att: [],
+      attN: 0
     };
   }
 
@@ -24467,6 +24546,15 @@ const App = (() => {
     if (!s) return;
     const res = flow.runner.answer(value);
     if (!res) return;
+    // 3.0.25: every whole-word attempt goes in the attempt log (the day's first
+    // test, the comebacks, a spacer, the paper test and the word tests inside a
+    // correction; Stages.attemptOf decides which steps count), saved at once so
+    // a session closed half way through a correction keeps it.
+    const att = Stages.attemptOf(s, res, flow.mode, flow.entry, today());
+    if (att) {
+      Stages.noteAttempt(db, att, CONFIG);
+      save();
+    }
     // 3.0.2: the first ask of a "which morphographs" question (tiles or
     // boxes, never a retry) moves the word towards the typing boxes, or back
     // to the tiles (Stages.afterWhich). 3.0.11: a level-3 ask (a type step
@@ -25329,6 +25417,8 @@ const App = (() => {
     problemOpen() { return !$('problem-panel').classList.contains('hidden'); },
     item(id) { return db.items[id] ? JSON.parse(JSON.stringify(db.items[id])) : null; },
     sessions() { return JSON.parse(JSON.stringify(db.sessions)); },
+    // 3.0.25: a copy of the attempt log ([] for a record without one)
+    att() { return JSON.parse(JSON.stringify(Array.isArray(db.att) ? db.att : [])); },
     report() { return buildReport(); },
     // 3.0.23: a pretend clock (fn returns ms; null puts Date.now back), the plan
     // the next session would be built to, and the open-session marker (a copy).
